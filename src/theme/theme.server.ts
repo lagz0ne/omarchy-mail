@@ -82,20 +82,22 @@ export const shapeOf = operation({
   },
 });
 
+const squircleScale = tag<number>({ label: "theme.squircleScale", default: 1.7 });
+
 export const sheetOf = operation({
   label: "theme.sheet",
   input: z.object({
     colors: z.string(),
     shape: z.object({ radius: z.number(), power: z.number() }),
   }),
-  depends: { colorsOf },
-  run: ({ colorsOf }, { input }) => {
+  depends: { colorsOf, squircleScale },
+  run: ({ colorsOf, squircleScale }, { input }) => {
     const c = colorsOf.run({ input: input.colors });
     if (c === null) return null;
 
     const corner = input.shape.power > 2 ? "squircle" : "round";
 
-    return `:root{color-scheme:${c.mode};--bg:${c.background};--bg-2:${c.dark_background};--bg-3:${c.darker_background};--bg-up:${c.lighter_background};--fg:${c.foreground};--fg-2:${c.bright_foreground};--dim:${c.dark_foreground};--muted:${c.muted};--accent:${c.accent};--sel:${c.selection};--warm:${c.bright_red};--line:color-mix(in srgb,${c.foreground} 14%,transparent);--red:${c.red};--yellow:${c.yellow};--green:${c.green};--cyan:${c.cyan};--blue:${c.blue};--magenta:${c.magenta};--radius:${input.shape.radius}px;--corner:${corner}}`;
+    return `:root{color-scheme:${c.mode};--bg:${c.background};--bg-2:${c.dark_background};--bg-3:${c.darker_background};--bg-up:${c.lighter_background};--fg:${c.foreground};--fg-2:${c.bright_foreground};--dim:${c.dark_foreground};--muted:${c.muted};--accent:${c.accent};--sel:${c.selection};--warm:${c.bright_red};--line:color-mix(in srgb,${c.foreground} 14%,transparent);--red:${c.red};--yellow:${c.yellow};--green:${c.green};--cyan:${c.cyan};--blue:${c.blue};--magenta:${c.magenta};--radius:${input.shape.radius}px;--corner:${corner};--corner-scale:${corner === "squircle" ? squircleScale : 1}}`;
   },
 });
 

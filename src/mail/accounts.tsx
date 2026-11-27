@@ -45,7 +45,7 @@ const AccountRow = memo(function AccountRow({ account }: { account: Account }) {
         <strong>{account.name}</strong> {account.email}
       </span>
       <small className="label">
-        {account.provider} ·{" "}
+        {account.provider === "google" ? "Gmail" : "Outlook"} ·{" "}
         {account.error ? (
           `Error: ${account.error}`
         ) : account.syncedAt ? (
