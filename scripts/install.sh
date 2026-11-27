@@ -31,7 +31,7 @@ MICROSOFT_CLIENT_ID=9e5f94bc-e8a4-4e73-b8be-63364c29d753
 # Telemetry goes nowhere unless a VictoriaMetrics stack listens here.
 OTEL_SERVICE_NAME=omarchy-mail
 VICTORIA_TRACES_URL=http://127.0.0.1:10428/insert/opentelemetry/v1/traces
-VICTORIA_LOGS_URL=http://127.0.0.1:9428/insert/opentelemetry/v1/logs
+VICTORIA_LOGS_URL=http://127.0.0.1:9428/insert/jsonline?_msg_field=msg&_time_field=time&_stream_fields=service,side
 ENV
   chmod 600 "$conf/env"
 fi

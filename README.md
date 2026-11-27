@@ -48,6 +48,10 @@ bun run check:style
 bun run check        # + build: dist/server
 ```
 
+Telemetry goes to a local VictoriaLogs (`:9428`, JSON lines) and VictoriaTraces (`:10428`, OTLP),
+run from `~/.local/share/victoria/compose.yml`. Failed or slow provider calls are logged as
+`provider.*`: open http://127.0.0.1:9428/select/vmui and query `_msg:provider`.
+
 Env: `PORT`, `MAIL_HOME`, `THEME_FILE`, `MAIL_SYNC_MS` (0 turns the loop off),
 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `MICROSOFT_CLIENT_ID`, and the three telemetry
 keys from `.env.example`.
