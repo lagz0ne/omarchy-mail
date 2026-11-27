@@ -98,4 +98,5 @@ sync.rawsBy exits{value} reads{} writes{} calls{google.raws,microsoft.raws}
 theme.refresh exits{value} reads{?} writes{?} calls{theme.sheet}
 theme.sheet exits{value} reads{} writes{} calls{theme.toml}
 theme.toml exits{value} reads{} writes{} calls{}
+ui.toggleAccount exits{value} reads{?} writes{?} calls{}
 ui.toggleRail exits{value} reads{?} writes{?} calls{}

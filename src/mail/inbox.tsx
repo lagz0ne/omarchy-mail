@@ -15,6 +15,7 @@ import {
   SearchIcon,
   SendIcon,
   SpamIcon,
+  ChevronIcon,
   StackIcon,
   StarIcon,
   SyncIcon,
@@ -158,15 +159,46 @@ const AccountBoxes = memo(function AccountBoxes({
 
   return (
     <section className="account" aria-label={account.email}>
-      <small className="label" title={account.email}>
-        {account.email}
-      </small>
+      <AccountHead account={account} />
+      <AccountFolders account={account} folders={shown} />
+    </section>
+  );
+});
+
+function AccountHead({ account }: { account: Account }) {
+  const shut = useData(ui.shutAccounts).includes(account.id);
+  const toggle = useRun(ui.toggleAccount);
+  const what = shut ? `Show ${account.email} folders` : `Hide ${account.email} folders`;
+
+  return (
+    <>
+      <button
+        type="button"
+        className="account-head"
+        title={what}
+        aria-label={what}
+        aria-expanded={!shut}
+        onClick={() => toggle.run({ input: { id: account.id } })}
+      >
+        <ChevronIcon open={!shut} />
+        <small className="label">{account.email}</small>
+      </button>
       {account.error && (
         <small className="label warn" title={`Last sync failed: ${account.error}`}>
           {account.error}
         </small>
       )}
-      {shown.map((folder) => (
+    </>
+  );
+}
+
+function AccountFolders({ account, folders }: { account: Account; folders: readonly FolderRow[] }) {
+  const shut = useData(ui.shutAccounts).includes(account.id);
+  if (shut) return null;
+
+  return (
+    <>
+      {folders.map((folder) => (
         <Link
           key={folder.id}
           to="/box/$box"
@@ -179,9 +211,9 @@ const AccountBoxes = memo(function AccountBoxes({
           <span>{folderNames[folder.kind] || folder.name}</span>
         </Link>
       ))}
-    </section>
+    </>
   );
-});
+}
 
 function FolderName({ account, id, fallback }: { account: string; id: string; fallback: string }) {
   const folders = useData(mailBoard.folders.where({ account }));

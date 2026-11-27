@@ -2,7 +2,7 @@ import { exits } from "@tinkered/cli/test";
 import { createScope } from "@tinkered/core";
 import { expect, test } from "vite-plus/test";
 
-import { railOpen, toggleRail, ui } from "@/ui";
+import { railOpen, shutAccounts, toggleAccount, toggleRail, ui } from "@/ui";
 
 test("the sidebar opens as it was left, and a toggle is remembered", async () => {
   const kept = new Map<string, string>([["mail.rail", "closed"]]);
@@ -26,4 +26,29 @@ test("the sidebar opens as it was left, and a toggle is remembered", async () =>
   expect(fresh.resolve(railOpen)).toBe(true);
   expect(fresh.run(toggleRail)).toBe(false);
   await fresh.close();
+});
+
+test("an account's folders fold and unfold, remembered; a broken memory is ignored", async () => {
+  const kept = new Map<string, string>([["mail.shut", "not json"]]);
+  const memory = {
+    getItem: (key: string) => kept.get(key) ?? null,
+    setItem: (key: string, value: string) => void kept.set(key, value),
+  };
+  const app = await createScope({
+    capsules: [exits({ file: process.env.TINKER_EXITS }), ui({ memory })],
+  }).ready;
+
+  expect(app.resolve(shutAccounts)).toEqual([]);
+  expect(app.run(toggleAccount, { input: { id: "g-1" } })).toBe(false);
+  expect(app.resolve(shutAccounts)).toEqual(["g-1"]);
+  expect(kept.get("mail.shut")).toBe('["g-1"]');
+  await app.close();
+
+  const again = await createScope({
+    capsules: [exits({ file: process.env.TINKER_EXITS }), ui({ memory })],
+  }).ready;
+  expect(again.resolve(shutAccounts)).toEqual(["g-1"]);
+  expect(again.run(toggleAccount, { input: { id: "g-1" } })).toBe(true);
+  expect(again.resolve(shutAccounts)).toEqual([]);
+  await again.close();
 });

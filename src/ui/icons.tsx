@@ -189,3 +189,11 @@ export function PlusIcon() {
     </Icon>
   );
 }
+
+export function ChevronIcon({ open }: { open: boolean }) {
+  return (
+    <Icon size={12}>
+      <path d={open ? "m6 9 6 6 6-6" : "m9 6 6 6-6 6"} />
+    </Icon>
+  );
+}
