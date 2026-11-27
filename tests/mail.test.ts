@@ -3,6 +3,7 @@ import { afterEach, expect, test } from "vite-plus/test";
 
 import { mail } from "@/mail";
 import type { Account, Opened, Row } from "@/mail/contract";
+import { announce } from "@/mail/notify.server";
 import { proxyLink } from "@/mail/render.server";
 import { foldText } from "@/mail/store.server";
 
@@ -375,6 +376,58 @@ test("folders: each provider's own, and a folder's mail once it is opened", asyn
   const before = w.world.imap.filter((step) => step === "list@Sent Items").length;
   await w.tab.run(mail.api["mail.sync"], { input: {} });
   await until(() => w.world.imap.filter((step) => step === "list@Sent Items").length > before);
+});
+
+test("notifications: none for a first sync, one for one new message, one for many", async () => {
+  const w = await world();
+  const all = w.box("all");
+  await w.signIn("google");
+  await until(() => all.rows().length === 2);
+  await new Promise((r) => setTimeout(r, 50));
+  expect(w.world.notes).toEqual([]);
+
+  await w.tab.run(mail.api["mail.sync"], { input: {} });
+  await until(() => w.world.notes.length === 1);
+  expect(w.world.notes[0]).toMatchObject({ title: "bo@example.org", body: "Subject m4" });
+
+  await w.signIn("microsoft");
+  await until(() => all.rows().length === 4);
+  w.world.extra = 4;
+  await w.tab.run(mail.api["mail.sync"], { input: {} });
+  await until(() => w.world.notes.length === 2);
+  expect(w.world.notes[1]?.title).toBe("4 new in bo@outlook.com");
+  expect(w.world.notes[1]?.body).toContain("+1 more");
+  const none = await w.server.run(announce, { input: { account: "x", email: "x", rows: [] } });
+  expect(none).toBe("none");
+});
+
+test("trusted senders: their images load by themselves, until the trust is taken back", async () => {
+  const w = await world();
+  const all = w.box("all");
+  const trusted = w.tab.resolve(mail.board.trusted.where({}));
+  trusted.watch(() => undefined);
+  await w.signIn("google");
+  await until(() => all.rows().length === 2);
+  const id = all.rows().find((r) => r.id.endsWith(":m1"))?.id ?? "";
+
+  const first = await w.open(id);
+  expect(first).toMatchObject({ kind: "message", domain: "example.org", trusted: false });
+  const trust = (on: boolean) =>
+    w.tab.run(mail.api["image.trust"], { input: { domain: "Example.org", trust: on } });
+  expect(await trust(true)).toEqual({ kind: "trusted" });
+  await until(() => trusted.get().length === 1);
+  expect(trusted.get()[0]?.domain).toBe("example.org");
+
+  const again = await w.open(id);
+  if (again.kind !== "message") throw new Error("not opened");
+  expect(again.trusted).toBe(true);
+  expect(again.srcdoc).toContain("/api/img?u=");
+
+  expect(await trust(false)).toEqual({ kind: "untrusted" });
+  await until(() => trusted.get().length === 0);
+  const after = await w.open(id);
+  if (after.kind !== "message") throw new Error("not opened");
+  expect(after.srcdoc).toContain('data-blocked="1"');
 });
 
 test("the root: the app opens at the inbox; a sign-in with no address is refused", async () => {

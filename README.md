@@ -16,6 +16,27 @@ Then fill `~/.config/omarchy-mail/env` (the file says where each id comes from) 
 `systemctl --user restart omarchy-mail`. Open **Mail** from the launcher, then **Accounts** →
 **Add Gmail** / **Add Outlook**.
 
+## Use
+
+| Keys | |
+|---|---|
+| `Ctrl`/`Alt` + `1`–`9` | open the Nth mailbox in the sidebar |
+| `j` / `k` | next / previous mail |
+| `gg` / `G` | first / last mail |
+| `u` | mark unread |
+| `i` | load this mail's images once |
+| `Esc` | back to the list |
+| `/` | search |
+| `Ctrl` + `\\` | fold the sidebar |
+
+- Accounts → Appearance: any installed Omarchy theme, or follow the desktop.
+- The shield in a mail trusts its sender's domain: its images load by themselves (still through
+  the proxy). Accounts → "Images load by themselves from" lists and removes them.
+- Drag the edge of the sidebar or the list to resize (double-click resets). Narrow windows show
+  one pane at a time.
+- New mail in an inbox pops a desktop notification (`notify-send`); the first sync of an account
+  stays quiet.
+
 ## How it works
 
 ```text

@@ -16,18 +16,63 @@ export const railOpen = data({ label: "ui.railOpen", initial: true });
 
 export const shutAccounts = data<readonly string[]>({ label: "ui.shutAccounts", initial: [] });
 
-const shutList = z
-  .string()
-  .transform((text, ctx) => {
-    try {
-      return JSON.parse(text);
-    } catch {
-      ctx.addIssue({ code: "custom", message: "not JSON" });
-      return z.NEVER;
-    }
-  })
-  .pipe(z.array(z.string()))
-  .catch([]);
+const themeKey = tag<string>({ label: "ui.themeKey", default: "mail.theme" });
+
+const layoutKey = tag<string>({ label: "ui.layoutKey", default: "mail.layout" });
+
+const widths = tag<{
+  readonly rail: readonly [number, number];
+  readonly list: readonly [number, number];
+}>({
+  label: "ui.widths",
+  default: { rail: [180, 360], list: [260, 640] },
+});
+
+export const themeChoice = data({ label: "ui.theme", initial: "desktop" });
+
+export const layout = data({ label: "ui.layout", initial: { rail: 224, list: 400 } });
+
+const layoutShape = z.object({ rail: z.number(), list: z.number() });
+
+export const chooseTheme = operation({
+  label: "ui.chooseTheme",
+  input: z.object({ name: z.string().regex(/^[\w.-]+$/) }),
+  depends: { theme: themeChoice.atScope.controller, memory, themeKey },
+  run: ({ theme, memory, themeKey }, { input }) => {
+    theme.set(input.name);
+    memory?.setItem(themeKey, input.name);
+    return input.name;
+  },
+});
+
+export const saveLayout = operation({
+  label: "ui.saveLayout",
+  input: layoutShape,
+  depends: { kept: layout.atScope.controller, memory, layoutKey, widths },
+  run: ({ kept, memory, layoutKey, widths }, { input }) => {
+    const [railMin, railMax] = widths.rail;
+    const [listMin, listMax] = widths.list;
+    const next = {
+      rail: Math.round(Math.min(railMax, Math.max(railMin, input.rail))),
+      list: Math.round(Math.min(listMax, Math.max(listMin, input.list))),
+    };
+
+    kept.set(next);
+    memory?.setItem(layoutKey, JSON.stringify(next));
+    return next;
+  },
+});
+
+const jsonOf = z.string().transform((text, ctx): unknown => {
+  try {
+    return JSON.parse(text);
+  } catch {
+    ctx.addIssue({ code: "custom", message: "not JSON" });
+    return z.NEVER;
+  }
+});
+
+const shutList = jsonOf.pipe(z.array(z.string())).catch([]);
 
 export const toggleAccount = operation({
   label: "ui.toggleAccount",
@@ -57,8 +102,17 @@ export const toggleRail = operation({
 
 export const ui = capsule({
   label: "ui",
-  config: { memory, railKey, shutKey },
-  exports: { railOpen, toggleRail, shutAccounts, toggleAccount },
+  config: { memory, railKey, shutKey, themeKey, layoutKey },
+  exports: {
+    railOpen,
+    toggleRail,
+    shutAccounts,
+    toggleAccount,
+    themeChoice,
+    chooseTheme,
+    layout,
+    saveLayout,
+  },
   hooks: {
     async start({ config, next, load }) {
       await next();
@@ -74,6 +128,18 @@ export const ui = capsule({
       load(shutAccounts, { role: "state", explain: "The accounts folded in the sidebar" }).set(
         shut,
       );
+
+      const theme = z
+        .string()
+        .regex(/^[\w.-]+$/)
+        .catch("desktop")
+        .parse(config.memory?.getItem(config.themeKey));
+      load(themeChoice, { role: "state", explain: "The theme picked in the app" }).set(theme);
+
+      const sizes = jsonOf.pipe(layoutShape).safeParse(config.memory?.getItem(config.layoutKey));
+      if (sizes.success) {
+        load(layout, { role: "state", explain: "The pane widths" }).set(sizes.data);
+      }
     },
   },
 });

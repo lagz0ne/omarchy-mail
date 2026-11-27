@@ -12,6 +12,9 @@ import {
   listAccounts,
   loadAccounts,
   loadFolders,
+  loadTrusted,
+  isTrusted,
+  trustDomain,
   loadMessages,
   readRaw,
 } from "./store.server";
@@ -34,7 +37,14 @@ const ownerOf = operation({
     const { account, pid } = splitId.run({ input });
     const owner = listAccounts.run().find((a) => a.id === account);
     const found = findMessage.run({ input: { account, pid } });
-    return owner && found ? { owner, pid, unread: found.unread === 1 } : null;
+    return owner && found
+      ? {
+          owner,
+          pid,
+          unread: found.unread === 1,
+          domain: found.from_addr.split("@").at(-1)?.toLowerCase() ?? "",
+        }
+      : null;
   },
 });
 
@@ -86,16 +96,18 @@ const setUnread = operation({
 export const openMessage = operation({
   label: "mail.open.do",
   input: mailApi["mail.open"].input,
-  depends: { ownerOf, sourceOf, renderMessage, setUnread },
-  run: async ({ ownerOf, sourceOf, renderMessage, setUnread }, { input }) => {
+  depends: { ownerOf, sourceOf, renderMessage, setUnread, isTrusted },
+  run: async ({ ownerOf, sourceOf, renderMessage, setUnread, isTrusted }, { input }) => {
     const found = ownerOf.run({ input: input.id });
     if (!found) return { kind: "gone" as const, id: input.id };
-    const { owner, pid } = found;
+    const { owner, pid, domain } = found;
+    const trusted = domain !== "" && isTrusted.run({ input: { domain } });
 
     const mime = await sourceOf.run({
       input: { account: owner.id, provider: owner.provider, user: owner.email, pid },
     });
-    const page = await renderMessage.run({ input: { id: input.id, mime, images: input.images } });
+    const images = input.images || trusted;
+    const page = await renderMessage.run({ input: { id: input.id, mime, images } });
     if (found.unread) {
       await setUnread.settle({
         input: {
@@ -107,7 +119,7 @@ export const openMessage = operation({
         },
       });
     }
-    return { kind: "message" as const, id: input.id, ...page };
+    return { kind: "message" as const, id: input.id, ...page, domain, trusted };
   },
 });
 
@@ -128,6 +140,17 @@ export const markMessage = operation({
       },
     });
     return { kind: "marked" as const };
+  },
+});
+
+export const trustImages = operation({
+  label: "image.trust.do",
+  input: mailApi["image.trust"].input,
+  depends: { trustDomain, invalidate: mailBoard.invalidate },
+  run: async ({ trustDomain, invalidate }, { input, clock }) => {
+    const out = trustDomain.run({ input: { ...input, at: clock.currentTimeMillis() } });
+    await invalidate.run({ input: { trusted: {} } });
+    return out;
   },
 });
 
@@ -156,6 +179,7 @@ export const mailOps = {
   "mail.mark": markMessage,
   "mail.sync": syncNow,
   "mail.pull": pullBox,
+  "image.trust": trustImages,
   "account.remove": removeAccount,
 } as const;
 
@@ -163,4 +187,5 @@ export const mailLoads = {
   accounts: loadAccounts,
   messages: loadMessages,
   folders: loadFolders,
+  trusted: loadTrusted,
 } as const;

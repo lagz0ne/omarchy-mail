@@ -11,7 +11,9 @@ import { telemetry } from "~/components/telemetry";
 import { mail } from "@/mail";
 import { routeTree } from "@/routes";
 import { theme } from "@/theme";
-import { toggleRail, ui } from "@/ui";
+import { ui } from "@/ui";
+import { drag } from "@/ui/drag";
+import { keys } from "@/ui/keys";
 
 const stop = new AbortController();
 
@@ -24,6 +26,8 @@ const app = createScope({
     mail.api({ remote: ws.client }),
     theme.board({ read: ws.client }),
     ui({ memory: localStorage }),
+    keys({ window }),
+    drag({ window }),
   ],
 });
 
@@ -37,30 +41,6 @@ import.meta.hot?.dispose(async () => {
 });
 
 const live = await app.ready;
-
-window.addEventListener("keydown", (event) => {
-  const digit = /^[1-9]$/.test(event.key) ? Number(event.key) : 0;
-  if (!digit || !(event.ctrlKey || event.altKey)) return;
-
-  const row = document.querySelectorAll<HTMLAnchorElement>(".rows a")[digit - 1];
-  event.preventDefault();
-  row?.click();
-  row?.focus();
-});
-
-window.addEventListener("keydown", (event) => {
-  if (event.key !== "/" || event.target instanceof HTMLInputElement) return;
-
-  event.preventDefault();
-  document.querySelector<HTMLInputElement>(".search input")?.focus();
-});
-
-window.addEventListener("keydown", (event) => {
-  if (event.key !== "\\" || !event.ctrlKey) return;
-
-  event.preventDefault();
-  void live.run(toggleRail);
-});
 
 const router = createRouter({
   routeTree,

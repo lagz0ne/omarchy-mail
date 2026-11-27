@@ -74,9 +74,16 @@ export const folders = data({
   key: (f) => ({ account: f.account, id: f.id }),
 });
 
+export const trusted = data({
+  label: "mail.trusted",
+  mode: "keyed",
+  parse: z.object({ domain: z.string(), at: z.number() }),
+  key: (t) => ({ domain: t.domain }),
+});
+
 export const syncing = data({ label: "mail.syncing", initial: { busy: false, at: 0 } });
 
-export const mailBoard = remoteData({ accounts, messages, folders, syncing });
+export const mailBoard = remoteData({ accounts, messages, folders, syncing, trusted });
 
 const gone = z.object({ kind: z.literal("gone"), id: z.string() });
 
@@ -102,6 +109,8 @@ const opened = z.object({
   date: z.number(),
   srcdoc: z.string(),
   remote: z.number(),
+  domain: z.string(),
+  trusted: z.boolean(),
   attachments: z.array(attachment),
 });
 
@@ -115,6 +124,13 @@ export const mailApi = rpc({
   "mail.mark": {
     input: z.object({ id: z.string(), unread: z.boolean() }),
     output: z.discriminatedUnion("kind", [z.object({ kind: z.literal("marked") }), gone]),
+  },
+  "image.trust": {
+    input: z.object({ domain: z.string().min(1), trust: z.boolean() }),
+    output: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("trusted") }),
+      z.object({ kind: z.literal("untrusted") }),
+    ]),
   },
   "mail.pull": {
     input: z.object({ box: z.string() }),

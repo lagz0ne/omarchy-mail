@@ -18,9 +18,11 @@ import {
   microsoftRaw,
   microsoftRaws,
 } from "./microsoft.server";
+import { announce } from "./notify.server";
 import type { Pulled } from "./provider.server";
 import { keepSource } from "./source.server";
 import {
+  meta,
   applySync,
   boxOf,
   listAccounts,
@@ -82,23 +84,27 @@ const keepPull = operation({
     const { account, pulled } = input;
     switch (pulled.kind) {
       case "full":
-        applySync.run({
-          input: { account, folder: "INBOX", full: true, rows: pulled.rows, removed: [] },
-        });
-        return pulled.cursor;
+        return {
+          cursor: pulled.cursor,
+          fresh: applySync.run({
+            input: { account, folder: "INBOX", full: true, rows: pulled.rows, removed: [] },
+          }).fresh,
+        };
       case "delta":
-        applySync.run({
-          input: {
-            account,
-            folder: "INBOX",
-            full: false,
-            rows: pulled.rows,
-            removed: pulled.removed,
-          },
-        });
-        return pulled.cursor;
+        return {
+          cursor: pulled.cursor,
+          fresh: applySync.run({
+            input: {
+              account,
+              folder: "INBOX",
+              full: false,
+              rows: pulled.rows,
+              removed: pulled.removed,
+            },
+          }).fresh,
+        };
       case "reset":
-        return null;
+        return { cursor: null, fresh: [] };
     }
   },
 });
@@ -231,6 +237,37 @@ export const queueTask = operation({
   },
 });
 
+const outcomeOf = operation({
+  label: "sync.outcome",
+  input: z.object({ done: z.unknown(), first: z.boolean() }),
+  run: (_, { input }) => {
+    const done = z
+      .object({
+        status: z.literal("success"),
+        value: z.object({ cursor: z.string().nullable(), fresh: z.array(meta) }),
+      })
+      .safeParse(input.done);
+    if (done.success) {
+      const fresh = input.first ? [] : done.data.value.fresh;
+      return { error: "", cursor: done.data.value.cursor, fresh };
+    }
+
+    const failure = z
+      .object({
+        error: z
+          .object({
+            kind: z.string().optional(),
+            payload: z.object({ status: z.number().optional() }).passthrough().optional(),
+          })
+          .passthrough(),
+      })
+      .safeParse(input.done);
+    const kind = failure.success ? (failure.data.error.kind ?? "failed") : "failed";
+    const status = failure.success ? failure.data.error.payload?.status : undefined;
+    return { error: status ? `${kind} ${status}` : kind, cursor: null, fresh: [] };
+  },
+});
+
 const syncInbox = operation({
   label: "sync.inbox",
   input: z.object({ account: z.string() }),
@@ -239,6 +276,8 @@ const syncInbox = operation({
     syncAccount,
     noteSync,
     queueTask,
+    announce,
+    outcomeOf,
     invalidate: mailBoard.invalidate,
   },
   run: async (deps, { input, clock }) => {
@@ -248,13 +287,13 @@ const syncInbox = operation({
     const done = await deps.syncAccount.settle({
       input: { id: owner.id, provider: owner.provider, user: owner.email, cursor: owner.cursor },
     });
-    const failure = Object(Object(done).error);
-    const error =
-      done.status === "success"
-        ? ""
-        : [failure.kind ?? "failed", failure.payload?.status].filter(Boolean).join(" ");
-    const cursor = done.status === "success" ? done.value : null;
+    const { error, cursor, fresh } = deps.outcomeOf.run({
+      input: { done, first: owner.cursor === null },
+    });
     deps.noteSync.run({ input: { id: owner.id, cursor, at: clock.currentTimeMillis(), error } });
+    if (fresh.length) {
+      await deps.announce.run({ input: { account: owner.id, email: owner.email, rows: fresh } });
+    }
     await deps.invalidate.run({ input: { accounts: {}, messages: {}, folders: {} } });
     if (!error) {
       deps.queueTask.run({

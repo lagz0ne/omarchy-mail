@@ -16,13 +16,14 @@ import { outlookImap } from "@/mail/imap.server";
 import { mailServer } from "@/mail/index.server";
 import { keyring } from "@/mail/keyring.server";
 import { net } from "@/mail/net.server";
+import { notifier } from "@/mail/notify.server";
 import { mailLoads, mailOps } from "@/mail/ops.server";
 import { mailRoutes } from "@/mail/routes.server";
 import { store } from "@/mail/store.server";
 import { runJob } from "@/mail/sync.server";
 import { throttle } from "@/mail/throttle.server";
 import { theme } from "@/theme";
-import { themeServer } from "@/theme/theme.server";
+import { themeLoads, themeServer } from "@/theme/theme.server";
 
 import { pages } from "./pages";
 
@@ -60,6 +61,7 @@ const mailEnv = z
     origin: e.PUBLIC_ORIGIN ?? `http://127.0.0.1:${e.PORT}`,
     dataDir: e.MAIL_HOME ?? join(e.XDG_DATA_HOME, "omarchy-mail"),
     colors: e.THEME_FILE ?? join(e.XDG_STATE_HOME, "omarchy/current/theme/colors.toml"),
+    themeDirs: [join(e.HOME, ".config/omarchy/themes"), "/usr/share/omarchy/themes"],
     clients: {
       google:
         e.GOOGLE_CLIENT_ID && e.GOOGLE_CLIENT_SECRET
@@ -127,6 +129,7 @@ export default defineMain(async ({ env, args, signal, stdout, stderr, exit }) =>
       net(),
       keyring(),
       outlookImap(),
+      notifier(),
       mailServer({
         clients: own.clients,
         origin,
@@ -135,8 +138,8 @@ export default defineMain(async ({ env, args, signal, stdout, stderr, exit }) =>
       }),
       mail.board({ serve: true, load: mailLoads }),
       mail.api({ implement: mailOps }),
-      themeServer({ file: own.colors }),
-      theme.board({ serve: true }),
+      themeServer({ file: own.colors, dirs: own.themeDirs }),
+      theme.board({ serve: true, load: themeLoads }),
       socket,
       table,
     ],

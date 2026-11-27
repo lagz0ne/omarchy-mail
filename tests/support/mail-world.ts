@@ -9,6 +9,7 @@ import { outlookImap, type OpenImap } from "@/mail/imap.server";
 import { mailServer } from "@/mail/index.server";
 import { keyring, type SecretStore } from "@/mail/keyring.server";
 import { backoff, net, type Http } from "@/mail/net.server";
+import { type Note, notifier } from "@/mail/notify.server";
 import { mailLoads, mailOps } from "@/mail/ops.server";
 import { mailRoutes } from "@/mail/routes.server";
 import { store } from "@/mail/store.server";
@@ -89,6 +90,8 @@ export type World = {
   busy: number;
   broken: "none" | "garbage" | "shape" | "cut" | "down" | "stall";
   logs: { message: string; attributes: Record<string, unknown> }[];
+  notes: Note[];
+  extra: number;
 };
 
 type Fake = [
@@ -128,6 +131,7 @@ const gmailMessage = (url: URL) => {
     m1: ["INBOX", "UNREAD", "STARRED"],
     m3: ["CATEGORY_UPDATES"],
     m6: ["SENT"],
+    m4: ["INBOX", "UNREAD"],
     m5: null,
   };
   const found = id in labels ? labels[id] : ["INBOX"];
@@ -253,6 +257,8 @@ export async function boot(
     busy: 0,
     broken: "none",
     logs: [],
+    notes: [],
+    extra: 0,
   };
   const kept = new Map<string, string>();
   const http: Http = async (request) => {
@@ -310,7 +316,12 @@ export async function boot(
       list: async (box, limit) => {
         world.imap.push(`list${where(box)}`);
         if (world.imapDown) throw new Error("connection lost");
-        return { validity: "7", rows: rowsIn(box).slice(0, limit) };
+        const extra = Array.from({ length: box === "INBOX" ? world.extra : 0 }, (_, i) => ({
+          uid: 90 + i,
+          envelope: { subject: `New ${i}`, from: [{ name: "Eve", address: "eve@outlook.com" }] },
+          flags: new Set<string>(),
+        }));
+        return { validity: "7", rows: [...rowsIn(box), ...extra].slice(0, limit) };
       },
       sources: async (box, uids) => {
         const what = uids.length === 1 ? `source:${uids[0]}` : `sources:${uids.join(",")}`;
@@ -349,6 +360,7 @@ export async function boot(
       net({ fetch: http }),
       keyring({ store: secrets }),
       outlookImap({ open }),
+      notifier({ send: async (note) => void world.notes.push(note) }),
       mailServer({
         clients,
         origin,

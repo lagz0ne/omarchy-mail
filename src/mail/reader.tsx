@@ -1,7 +1,7 @@
-import { Link } from "@tanstack/react-router";
+import { Link, useRouter } from "@tanstack/react-router";
 import { useRun } from "@tinkered/react";
 
-import { ClipIcon, ImageIcon, UnreadIcon } from "@/ui/icons";
+import { BackIcon, ClipIcon, ImageIcon, ShieldIcon, UnreadIcon } from "@/ui/icons";
 
 import { type Address, mailApi, type Opened } from "./contract";
 import { When } from "./inbox";
@@ -43,6 +43,57 @@ export function Reader({ out, box, images }: { out: OpenAnswer; box: string; ima
   }
 }
 
+function ImageActions({ message, box, images }: { message: Opened; box: string; images: boolean }) {
+  if (message.remote === 0) return null;
+
+  const id = message.id;
+  return (
+    <>
+      {message.remote > 0 && !images && !message.trusted && (
+        <Link
+          to="/box/$box/$id"
+          params={{ box, id }}
+          search={{ images: true }}
+          className="icon-key warm"
+          title={`Load ${message.remote} remote images once (i)`}
+          aria-label={`Load ${message.remote} remote images once`}
+        >
+          <ImageIcon />
+          <small>{message.remote}</small>
+        </Link>
+      )}
+      {message.remote > 0 && message.domain && <Trust message={message} />}
+    </>
+  );
+}
+
+function Trust({ message }: { message: Opened }) {
+  const trust = useRun(mailApi["image.trust"]);
+  const router = useRouter();
+  const what = message.trusted
+    ? `Stop loading images from ${message.domain} by themselves`
+    : `Always load images from ${message.domain}`;
+
+  return (
+    <button
+      type="button"
+      className={message.trusted ? "icon-key on" : "icon-key"}
+      title={what}
+      aria-label={what}
+      aria-pressed={message.trusted}
+      disabled={trust.isPending}
+      onClick={() =>
+        void trust
+          .runAsync({ input: { domain: message.domain, trust: !message.trusted } })
+          .then(() => router.invalidate())
+      }
+    >
+      <ShieldIcon />
+      <small>{message.domain}</small>
+    </button>
+  );
+}
+
 function Message({ message, box, images }: { message: Opened; box: string; images: boolean }) {
   const mark = useRun(mailApi["mail.mark"]);
   const id = message.id;
@@ -50,6 +101,15 @@ function Message({ message, box, images }: { message: Opened; box: string; image
   return (
     <section className="reader" aria-label="Message">
       <header className="reader-head">
+        <Link
+          to="/box/$box"
+          params={{ box }}
+          className="back icon-key"
+          title="Back (Esc)"
+          aria-label="Back to the list"
+        >
+          <BackIcon />
+        </Link>
         <small className="label">
           <span title={message.from.address}>{message.from.name || message.from.address}</span> ·{" "}
           <When at={message.date} />
@@ -74,19 +134,7 @@ function Message({ message, box, images }: { message: Opened; box: string; image
           >
             <UnreadIcon />
           </button>
-          {message.remote > 0 && !images && (
-            <Link
-              to="/box/$box/$id"
-              params={{ box, id }}
-              search={{ images: true }}
-              className="icon-key warm"
-              title={`Load ${message.remote} remote images`}
-              aria-label={`Load ${message.remote} remote images`}
-            >
-              <ImageIcon />
-              <small>{message.remote}</small>
-            </Link>
-          )}
+          <ImageActions message={message} box={box} images={images} />
         </div>
         {message.attachments.length > 0 && (
           <ul className="files">

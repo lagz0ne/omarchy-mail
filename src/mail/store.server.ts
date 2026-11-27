@@ -29,6 +29,7 @@ create table if not exists folders (
   account text not null, id text not null, name text not null, kind text not null,
   position integer not null, primary key (account, id)
 );
+create table if not exists trusted (domain text primary key, at integer not null);
 create table if not exists boxes (
   account text not null, folder text not null, synced_at integer not null default 0,
   viewed_at integer not null default 0, primary key (account, folder)
@@ -228,6 +229,11 @@ export const applySync = operation({
     const drop = db.query(
       "delete from messages where account = $account and folder = $folder and pid = $pid",
     );
+    const known = db.query("select 1 from messages where account = $account and pid = $pid");
+    const arrived = input.rows.filter(
+      (m) => m.unread && known.get({ $account: input.account, $pid: m.pid }) === null,
+    );
+
     db.transaction(() => {
       if (input.full) {
         db.query("delete from messages where account = $account and folder = $folder").run(box);
@@ -257,7 +263,7 @@ export const applySync = operation({
          and pid not in (select pid from messages where account = $account)`,
       ).run({ $account: input.account });
     })();
-    return { count: input.rows.length };
+    return { count: input.rows.length, fresh: arrived };
   },
 });
 
@@ -464,9 +470,11 @@ export const findMessage = operation({
   depends: { db: store },
   run: ({ db }, { input }) => {
     const found = db
-      .query("select unread from messages where account = $account and pid = $pid")
+      .query("select unread, from_addr from messages where account = $account and pid = $pid")
       .get({ $account: input.account, $pid: input.pid });
-    return found === null ? null : z.object({ unread: z.number() }).parse(found);
+    return found === null
+      ? null
+      : z.object({ unread: z.number(), from_addr: z.string() }).parse(found);
   },
 });
 
@@ -506,4 +514,43 @@ export const keepRaw = operation({
       $mime: input.mime,
     });
   },
+});
+
+export const trustDomain = operation({
+  label: "store.trust",
+  input: z.object({ domain: z.string().min(1), trust: z.boolean(), at: z.number() }),
+  depends: { db: store },
+  run: ({ db }, { input }) => {
+    const key = { $domain: input.domain.toLowerCase() };
+    if (input.trust) {
+      db.query("insert or replace into trusted values ($domain, $at)").run({
+        ...key,
+        $at: input.at,
+      });
+      return { kind: "trusted" as const };
+    }
+
+    db.query("delete from trusted where domain = $domain").run(key);
+    return { kind: "untrusted" as const };
+  },
+});
+
+export const isTrusted = operation({
+  label: "store.trusted.is",
+  input: z.object({ domain: z.string() }),
+  depends: { db: store },
+  run: ({ db }, { input }) =>
+    db
+      .query("select 1 from trusted where domain = $domain")
+      .get({ $domain: input.domain.toLowerCase() }) !== null,
+});
+
+export const loadTrusted = operation({
+  label: "store.trusted.load",
+  input: z.object({}),
+  depends: { db: store },
+  run: ({ db }) =>
+    z
+      .array(z.object({ domain: z.string(), at: z.number() }))
+      .parse(db.query("select domain, at from trusted order by domain").all()),
 });

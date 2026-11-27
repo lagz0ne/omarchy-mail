@@ -7,11 +7,13 @@ import { Accounts } from "@/mail/accounts";
 import { Box, Idle, Rail } from "@/mail/inbox";
 import { Reader } from "@/mail/reader";
 import { ThemeStyle } from "@/theme/theme-style";
+import { PaneSizes } from "@/ui/panes";
 
 const root = createRootRouteWithContext<{ scope: Scope.Handle }>()({
   component: () => (
     <div className="app">
       <ThemeStyle />
+      <PaneSizes />
       <Rail />
       <Outlet />
     </div>

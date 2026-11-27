@@ -22,6 +22,7 @@ import {
   TagIcon,
   TrashIcon,
 } from "@/ui/icons";
+import { Grip } from "@/ui/panes";
 
 import { type Account, type FolderRow, mailBoard, type Row } from "./contract";
 
@@ -109,6 +110,7 @@ export function Rail() {
         className="box"
         activeProps={{ className: "box on" }}
         title="All inboxes"
+        data-mailbox
       >
         <StackIcon />
         {open && <span>All inboxes</span>}
@@ -118,6 +120,7 @@ export function Rail() {
           <AccountBoxes key={account.id} account={account} open={open} />
         ))}
       </div>
+      {open && <Grip pane="rail" />}
       <div className="rail-foot">
         <SyncState open={open} />
         <Link to="/accounts" className="box" activeProps={{ className: "box on" }} title="Accounts">
@@ -148,6 +151,7 @@ const AccountBoxes = memo(function AccountBoxes({
         params={{ box: account.id }}
         className="box avatar"
         activeProps={{ className: "box avatar on" }}
+        data-mailbox
         title={account.error ? `${account.email} · ${account.error}` : account.email}
       >
         <span className={account.error ? "initial warn" : "initial"}>
@@ -206,6 +210,7 @@ function AccountFolders({ account, folders }: { account: Account; folders: reado
           className="box"
           activeProps={{ className: "box on" }}
           title={folderNames[folder.kind] || folder.name}
+          data-mailbox
         >
           <FolderIcon kind={folder.kind} />
           <span>{folderNames[folder.kind] || folder.name}</span>
@@ -318,11 +323,12 @@ export function Box({ box }: { box: string }) {
   return (
     <>
       <section className="list" aria-label="Messages">
+        <Grip pane="list" />
         <BoxHead box={box} unread={list.filter((m) => m.unread).length} count={list.length} />
         <BoxState state={state} empty={list.length === 0} searching={box.startsWith("search:")} />
         <ol className="rows">
-          {list.map((m, i) => (
-            <MessageRow key={m.id} row={m} nth={i < 9 ? i + 1 : 0} />
+          {list.map((m) => (
+            <MessageRow key={m.id} row={m} />
           ))}
         </ol>
       </section>
@@ -331,20 +337,18 @@ export function Box({ box }: { box: string }) {
   );
 }
 
-const MessageRow = memo(function MessageRow({ row, nth }: { row: Row; nth: number }) {
+const MessageRow = memo(function MessageRow({ row }: { row: Row }) {
   return (
     <li>
       <Link
         to="/box/$box/$id"
         params={{ box: row.box, id: row.id }}
         className={row.unread ? "row unread" : "row"}
-        title={nth ? `Ctrl+${nth}` : undefined}
         activeProps={{ className: row.unread ? "row unread on" : "row on" }}
       >
         <span className="from">{row.fromName || row.fromAddr}</span>
         <small className="date">
           <When at={row.date} />
-          {nth > 0 && <kbd className="nth">{nth}</kbd>}
         </small>
         <span className="subject">
           {row.attach && <ClipIcon />}
