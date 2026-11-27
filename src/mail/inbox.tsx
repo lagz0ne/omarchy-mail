@@ -1,13 +1,10 @@
-import { Link, Outlet } from "@tanstack/react-router";
+import { Link, Outlet, useNavigate } from "@tanstack/react-router";
 import type { PartState } from "@tinkered/core";
 import { useData, useRun } from "@tinkered/react";
 import { memo } from "react";
 
 import { type Account, mailApi, mailBoard, type Row } from "./contract";
 
-// The mail pages: the rail of boxes, a box's list, and (in the outlet) the open message.
-
-/** A date as mail shows it: the time today, the day this year, else the full date. */
 export function When({ at }: { at: number }) {
   const day = new Date(at);
   const now = new Date();
@@ -23,7 +20,6 @@ export function When({ at }: { at: number }) {
   return <time dateTime={day.toISOString()}>{text}</time>;
 }
 
-/** The left rail: every box, the sync button, and the accounts page. */
 export function Rail() {
   const list = useData(mailBoard.accounts.where({}));
   const sync = useRun(mailApi["mail.sync"]);
@@ -77,23 +73,62 @@ const BoxLink = memo(function BoxLink({ account }: { account: Account }) {
   );
 });
 
-/** The box's name and count, above its list. */
-function BoxHead({ box, unread }: { box: string; unread: number }) {
+function BoxHead({ box, unread, count }: { box: string; unread: number; count: number }) {
   const accounts = useData(mailBoard.accounts.where({}));
+  const navigate = useNavigate();
   const own = accounts.find((a) => a.id === box);
+  const query = box.startsWith("search:") ? box.slice(7) : "";
+  const where = own ? own.email : "All inboxes";
 
   return (
     <header className="list-head">
+      <form
+        role="search"
+        className="search"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const q = new FormData(event.currentTarget).get("q");
+          const words = typeof q === "string" ? q.trim() : "";
+          void navigate({ to: "/box/$box", params: { box: words ? `search:${words}` : "all" } });
+        }}
+      >
+        <input
+          key={box}
+          name="q"
+          type="search"
+          aria-label="Search mail"
+          placeholder="Search every inbox"
+          defaultValue={query}
+          autoComplete="off"
+        />
+      </form>
       <small className="label">
-        {own ? own.email : "All inboxes"} · {unread} unread
+        {query ? `Search · ${count} found` : `${where} · ${unread} unread`}
       </small>
-      <h1>{own ? own.name : "Inbox"}</h1>
+      <h1>{query || (own ? own.name : "Inbox")}</h1>
     </header>
   );
 }
 
-/** A line for a list that is not ready, or is empty. */
-function BoxState({ state, empty }: { state: PartState | undefined; empty: boolean }) {
+function Empty({ searching }: { searching: boolean }) {
+  if (searching) return <p className="quiet">No mail has these words.</p>;
+
+  return (
+    <p className="quiet">
+      Nothing here. <Link to="/accounts">Add an account</Link>.
+    </p>
+  );
+}
+
+function BoxState({
+  state,
+  empty,
+  searching,
+}: {
+  state: PartState | undefined;
+  empty: boolean;
+  searching: boolean;
+}) {
   switch (state?.status) {
     case undefined:
     case "pending":
@@ -101,15 +136,10 @@ function BoxState({ state, empty }: { state: PartState | undefined; empty: boole
     case "fault":
       return <p className="quiet">Could not load: {state.fault.fault}.</p>;
     case "ready":
-      return empty ? (
-        <p className="quiet">
-          Nothing here. <Link to="/accounts">Add an account</Link>.
-        </p>
-      ) : null;
+      return empty ? <Empty searching={searching} /> : null;
   }
 }
 
-/** `/box/$box`: the box's newest messages, live; the open message beside them. */
 export function Box({ box }: { box: string }) {
   const part = mailBoard.messages.where({ box }, { order: "-date", limit: 200 });
   const list = useData(part);
@@ -118,8 +148,8 @@ export function Box({ box }: { box: string }) {
   return (
     <>
       <section className="list" aria-label="Messages">
-        <BoxHead box={box} unread={list.filter((m) => m.unread).length} />
-        <BoxState state={state} empty={list.length === 0} />
+        <BoxHead box={box} unread={list.filter((m) => m.unread).length} count={list.length} />
+        <BoxState state={state} empty={list.length === 0} searching={box.startsWith("search:")} />
         <ol className="rows">
           {list.map((m) => (
             <MessageRow key={m.id} row={m} />
@@ -154,7 +184,6 @@ const MessageRow = memo(function MessageRow({ row }: { row: Row }) {
   );
 });
 
-/** No message open yet. */
 export function Idle() {
   return (
     <section className="reader idle" aria-label="Message">

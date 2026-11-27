@@ -1,4 +1,4 @@
-import { operation } from "@tinkered/core";
+import { operation, tag } from "@tinkered/core";
 import PostalMime from "postal-mime";
 import sanitize from "sanitize-html";
 import { z } from "zod";
@@ -6,58 +6,59 @@ import { z } from "zod";
 import { origin, signer } from "./config.server";
 import type { Attachment } from "./contract";
 
-// A message's source to a page for a sandboxed frame. Three walls stand between the mail and the
-// app: the sanitizer drops scripts, handlers, forms and frames; the CSP lets the page load only
-// images from this server (attachments, and the signed image proxy); and the frame's sandbox
-// gives it no scripts and no origin of its own.
+const tags = tag<string[]>({
+  label: "render.tags",
+  default: [
+    ...sanitize.defaults.allowedTags,
+    "img",
+    "style",
+    "font",
+    "center",
+    "u",
+    "s",
+    "small",
+    "big",
+    "hr",
+    "colgroup",
+    "col",
+  ],
+});
 
-/** The tags HTML mail uses, beside the sanitizer's defaults. */
-const tags = [
-  ...sanitize.defaults.allowedTags,
-  "img",
-  "style",
-  "font",
-  "center",
-  "u",
-  "s",
-  "small",
-  "big",
-  "hr",
-  "colgroup",
-  "col",
-];
+const layout = tag<string[]>({
+  label: "render.layout",
+  default: [
+    "style",
+    "class",
+    "id",
+    "align",
+    "valign",
+    "width",
+    "height",
+    "bgcolor",
+    "background",
+    "border",
+    "cellpadding",
+    "cellspacing",
+    "color",
+    "face",
+    "size",
+    "dir",
+    "lang",
+    "title",
+    "colspan",
+    "rowspan",
+  ],
+});
 
-const layout = [
-  "style",
-  "class",
-  "id",
-  "align",
-  "valign",
-  "width",
-  "height",
-  "bgcolor",
-  "background",
-  "border",
-  "cellpadding",
-  "cellspacing",
-  "color",
-  "face",
-  "size",
-  "dir",
-  "lang",
-  "title",
-  "colspan",
-  "rowspan",
-];
-
-/** The frame's own look: a sheet of paper, as mail expects. The mail's styles come after. */
-const base = `html{background:#fff}body{margin:0;padding:28px 32px;color:#16191b;background:#fff;
+const base = tag<string>({
+  label: "render.base",
+  default: `html{background:#fff}body{margin:0;padding:28px 32px;color:#16191b;background:#fff;
 font:15px/1.55 "Nimbus Sans","Helvetica Neue",Helvetica,Arial,sans-serif;overflow-wrap:anywhere}
 img{max-width:100%;height:auto}pre.plain{white-space:pre-wrap;font:inherit;margin:0}
 blockquote{margin:0 0 0 .8em;padding-left:.8em;border-left:2px solid #d9d8d2;color:#3a3d40}
-a{color:#b64327}`;
+a{color:#b64327}`,
+});
 
-/** The signed proxy link of a remote image. */
 export const proxyLink = operation({
   label: "render.proxyLink",
   input: z.string(),
@@ -70,7 +71,6 @@ export const proxyLink = operation({
   },
 });
 
-/** Text mail as HTML: escaped, with its links live. */
 const textPage = operation({
   label: "render.text",
   input: z.string(),
@@ -85,15 +85,13 @@ const textPage = operation({
 
 const addr = z.object({ name: z.string().default(""), address: z.string().default("") });
 
-/** A header's people; a group or a missing header gives none. */
 const people = z.array(addr).catch([]);
 
-/** The parsed message, its body as a frame document, and the attachments a person can open. */
 export const renderMessage = operation({
   label: "render.message",
   input: z.object({ id: z.string(), mime: z.instanceof(Uint8Array), images: z.boolean() }),
-  depends: { origin, proxyLink, textPage },
-  run: async ({ origin, proxyLink, textPage }, { input }) => {
+  depends: { origin, proxyLink, textPage, tags, layout, base },
+  run: async ({ origin, proxyLink, textPage, tags, layout, base }, { input }) => {
     const mail = await PostalMime.parse(input.mime);
     const at = `${origin}/api/att/${encodeURIComponent(input.id)}`;
     const cids = new Set<string>();
@@ -165,7 +163,6 @@ export const renderMessage = operation({
   },
 });
 
-/** One attachment's bytes, by its place in the message or by its content id. */
 export const attachmentOf = operation({
   label: "render.attachment",
   input: z.object({ mime: z.instanceof(Uint8Array), part: z.string() }),
@@ -185,5 +182,21 @@ export const attachmentOf = operation({
       type: found.mimeType,
       name: found.filename ?? "attachment",
     };
+  },
+});
+
+export const textOf = operation({
+  label: "render.textOf",
+  input: z.object({ mime: z.instanceof(Uint8Array) }),
+  run: async (_, { input }) => {
+    const mail = await PostalMime.parse(input.mime);
+    if (mail.text) return mail.text;
+
+    return (mail.html ?? "")
+      .replaceAll(/<(style|script|head)[\s\S]*?<\/\1>/gi, " ")
+      .replaceAll(/<[^>]+>/g, " ")
+      .replaceAll(/&nbsp;|&#160;/g, " ")
+      .replaceAll(/\s+/g, " ")
+      .trim();
   },
 });

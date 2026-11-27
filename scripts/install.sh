@@ -23,11 +23,10 @@ PORT=6245
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 
-# entra.microsoft.com > App registrations > New: "Personal Microsoft accounts only".
-# Authentication > Add platform > "Mobile and desktop": http://localhost/oauth/callback
-# Allow public client flows: Yes. API permissions (delegated): Mail.ReadWrite, Mail.Send,
-# User.Read, offline_access.
-MICROSOFT_CLIENT_ID=
+# Outlook.com: Thunderbird's public desktop client (personal Microsoft accounts can no longer
+# register their own app without a directory). It grants IMAP + SMTP for personal accounts, and
+# its sign-in returns to http://localhost:PORT/.
+MICROSOFT_CLIENT_ID=9e5f94bc-e8a4-4e73-b8be-63364c29d753
 
 # Telemetry goes nowhere unless a VictoriaMetrics stack listens here.
 OTEL_SERVICE_NAME=omarchy-mail

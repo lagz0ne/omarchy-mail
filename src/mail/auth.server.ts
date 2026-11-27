@@ -1,13 +1,10 @@
-import { data, operation } from "@tinkered/core";
+import { data, operation, tag } from "@tinkered/core";
 import { z } from "zod";
 
-import { vault } from "./config.server";
 import { provider } from "./contract";
 import { googleAuthUrl, googleExchange, googleRefresh } from "./google.server";
+import { keyring } from "./keyring.server";
 import { microsoftAuthUrl, microsoftExchange, microsoftRefresh } from "./microsoft.server";
-
-// Sign-in and tokens. Refresh tokens live in the vault (the keyring); access tokens live in a
-// server cell only, and a sign-in on its way lives in another, keyed by its `state`.
 
 const pending = data({
   label: "auth.pending",
@@ -23,17 +20,14 @@ const access = data({
   key: (a) => ({ account: a.account }),
 });
 
-/** A sign-in is good for this long after it starts. */
-const pendingFor = 10 * 60_000;
+const pendingFor = tag<number>({ label: "auth.pendingFor", default: 10 * 60_000 });
 
-/** base64url of SHA-256: the PKCE challenge of a verifier. */
 const challengeOf = operation({
   label: "auth.challenge",
   input: z.string(),
   run: (_, { input }) => new Bun.CryptoHasher("sha256").update(input).digest("base64url"),
 });
 
-/** Starts a sign-in: the provider's page to send the person to. */
 export const beginSignIn = operation({
   label: "auth.begin",
   input: z.object({ provider }),
@@ -57,22 +51,22 @@ export const beginSignIn = operation({
   },
 });
 
-/** The provider sent the person back: trade the code for tokens, keep the refresh token. */
 export const finishSignIn = operation({
   label: "auth.finish",
   input: z.object({ state: z.string(), code: z.string() }),
   depends: {
     list: pending.atScope.controller,
     tokens: access.atScope.controller,
-    vault,
+    vault: keyring,
     googleExchange,
     microsoftExchange,
+    pendingFor,
   },
   run: async (deps, { input, clock }) => {
     const found = deps.list.of({ state: input.state }).get();
     if (!found) return { kind: "unknown" as const };
     deps.list.delete({ state: input.state });
-    if (clock.currentTimeMillis() - found.at > pendingFor) return { kind: "unknown" as const };
+    if (clock.currentTimeMillis() - found.at > deps.pendingFor) return { kind: "unknown" as const };
     const call = { input: { code: input.code, verifier: found.verifier } };
 
     const got =
@@ -95,7 +89,6 @@ export const finishSignIn = operation({
   },
 });
 
-/** A refresh by the account's provider. */
 const refreshBy = operation({
   label: "auth.refreshBy",
   input: z.object({ provider, refresh: z.string() }),
@@ -106,11 +99,10 @@ const refreshBy = operation({
   },
 });
 
-/** A live access token for an account: the kept one, or a fresh one by its refresh token. */
 export const accessToken = operation({
   label: "auth.token",
   input: z.object({ account: z.string(), provider }),
-  depends: { tokens: access.atScope.controller, vault, refreshBy },
+  depends: { tokens: access.atScope.controller, vault: keyring, refreshBy },
   run: async ({ tokens, vault, refreshBy }, { input, clock, raise }) => {
     const kept = tokens.of({ account: input.account }).get();
     if (kept && kept.expires - 60_000 > clock.currentTimeMillis()) return kept.token;
@@ -124,11 +116,10 @@ export const accessToken = operation({
   },
 });
 
-/** Forgets an account's tokens. */
 export const forgetTokens = operation({
   label: "auth.forget",
   input: z.object({ account: z.string() }),
-  depends: { tokens: access.atScope.controller, vault },
+  depends: { tokens: access.atScope.controller, vault: keyring },
   run: async ({ tokens, vault }, { input }) => {
     tokens.delete({ account: input.account });
     await vault.delete(`refresh:${input.account}`);

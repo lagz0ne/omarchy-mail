@@ -1,23 +1,20 @@
-import { Database } from "bun:sqlite";
-
 import { exits } from "@tinkered/cli/test";
-import { createScope, resource } from "@tinkered/core";
+import { createScope } from "@tinkered/core";
 import { makeTestClock, memory } from "@tinkered/core/testing";
 
 import { routes } from "~/components/requests/index.server";
 
 import { mail } from "@/mail";
-import type { Http, Vault } from "@/mail/config.server";
+import { outlookImap, type OpenImap } from "@/mail/imap.server";
 import { mailServer } from "@/mail/index.server";
+import { keyring, type SecretStore } from "@/mail/keyring.server";
+import { net, type Http } from "@/mail/net.server";
 import { mailLoads, mailOps } from "@/mail/ops.server";
 import { mailRoutes } from "@/mail/routes.server";
-
-// A fake Google, a fake Microsoft and a fake image host, behind the `http` slot; a map behind the
-// `vault` slot. Each test boots a real server scope and a tab over `memory`, as the cmds do.
+import { store } from "@/mail/store.server";
 
 export const origin = "http://127.0.0.1:6245";
 
-/** A message as the providers give it: html with a cid image, a remote image, a script, a file. */
 export const mime = [
   "From: Ann Lee <ann@example.org>",
   "To: Me <me@example.org>, Bo <bo@example.org>",
@@ -51,7 +48,6 @@ export const mime = [
   "",
 ].join("\r\n");
 
-/** A text-only message. */
 export const plain = [
   "From: bo@example.org",
   "Subject: Plain",
@@ -63,7 +59,6 @@ export const plain = [
 
 const json = (value: unknown, status = 200) => Response.json(value, { status });
 
-/** Gmail's list fields of a message, in the inbox or not. */
 const gmeta = (id: string, labels: string[]) =>
   json({
     id,
@@ -80,22 +75,17 @@ const gmeta = (id: string, labels: string[]) =>
     },
   });
 
-/** The world's knobs: a test turns them to reach each answer. */
 export type World = {
   requests: Request[];
-  /** The history page a cursor gets: "pages", "dead" (404) or "broken" (500). */
   history: "pages" | "dead" | "broken";
-  /** The Graph delta answer for a cursor: "pages", "dead" (410) or "broken" (500). */
-  delta: "pages" | "dead" | "broken";
-  /** No refresh token from the token endpoint. */
+  imapDown: boolean;
+  imap: string[];
+  noIdentity: boolean;
   noRefresh: boolean;
-  /** Graph's raw fetch fails. */
   rawFails: boolean;
-  /** Gmail's modify (mark read) fails. */
   markFails: boolean;
 };
 
-/** One fake endpoint: a test of the request, and its answer. */
 type Fake = [
   (url: URL, method: string) => boolean,
   (world: World, url: URL, body: string) => Response,
@@ -145,35 +135,43 @@ const tokens = (prefix: string) => (world: World, _url: URL, body: string) =>
     refresh_token: world.noRefresh ? undefined : `${prefix}-rt`,
   });
 
-const graphItem = (id: string, read: boolean) => ({
-  id,
-  conversationId: `c-${id}`,
-  subject: `Graph ${id}`,
-  bodyPreview: "preview",
-  receivedDateTime: "2026-11-21T10:00:00Z",
-  isRead: read,
-  hasAttachments: id === "o1",
-  flag: { flagStatus: id === "o1" ? "flagged" : "notFlagged" },
-  from:
-    id === "o3"
-      ? null
-      : { emailAddress: { name: id === "o1" ? "Cy" : null, address: "cy@outlook.com" } },
-});
+const idToken = (claims: object) =>
+  `x.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.y`;
 
-const deltaPage = (world: World, url: URL) => {
-  if (world.delta === "dead") return json({}, 410);
-  if (world.delta === "broken") return json({}, 500);
-  if (url.searchParams.get("page") !== "2") {
-    return json({
-      value: [graphItem("o1", false), graphItem("o2", true)],
-      "@odata.nextLink": `${url.origin}${url.pathname}?page=2`,
-    });
-  }
+const microsoftTokens = (world: World, url: URL, body: string) => {
+  const answer = tokens("m")(world, url, body);
+  if (body.includes("grant_type=refresh_token")) return answer;
   return json({
-    value: [graphItem("o3", true), { id: "o9", "@removed": { reason: "deleted" } }],
-    "@odata.deltaLink": `${url.origin}${url.pathname}?cursor=next`,
+    access_token: "m-at",
+    expires_in: 3600,
+    refresh_token: world.noRefresh ? undefined : "m-rt",
+    id_token: world.noIdentity ? idToken({ name: "Bo" }) : idToken({ email: "bo@outlook.com" }),
   });
 };
+
+const imapRows = [
+  {
+    uid: 11,
+    envelope: {
+      messageId: "<t11@x>",
+      subject: "IMAP one",
+      date: new Date(Date.UTC(2026, 10, 21)),
+      from: [{ name: "Cy", address: "cy@outlook.com" }],
+    },
+    flags: new Set(["\\Flagged"]),
+    bodyStructure: { type: "multipart/mixed" },
+  },
+  {
+    uid: 12,
+    envelope: {
+      subject: "IMAP two",
+      date: "2026-11-22T00:00:00Z",
+      from: [{ address: "dee@outlook.com" }],
+    },
+    flags: new Set(["\\Seen"]),
+    bodyStructure: { type: "text/plain" },
+  },
+];
 
 const fakes: Fake[] = [
   [at("oauth2.googleapis.com"), tokens("g")],
@@ -186,20 +184,7 @@ const fakes: Fake[] = [
   [at("gmail.googleapis.com", `${gmail}/history`), historyPage],
   [at("gmail.googleapis.com", /\/modify$/), (world) => json({}, world.markFails ? 500 : 200)],
   [at("gmail.googleapis.com", /\/messages\/\w+$/), (_w, url) => gmailMessage(url)],
-  [at("login.microsoftonline.com"), tokens("m")],
-  [
-    at("graph.microsoft.com", "/v1.0/me"),
-    () => json({ displayName: null, mail: null, userPrincipalName: "bo@outlook.com" }),
-  ],
-  [at("graph.microsoft.com", /\/delta$/), deltaPage],
-  [
-    at("graph.microsoft.com", /\/\$value$/),
-    (world) => (world.rawFails ? new Response("no", { status: 503 }) : new Response(plain)),
-  ],
-  [
-    (url, method) => url.host === "graph.microsoft.com" && method === "PATCH",
-    () => new Response(null, { status: 204 }),
-  ],
+  [at("login.microsoftonline.com"), microsoftTokens],
   [
     at("img.example", "/a.png"),
     () => new Response(new Uint8Array([137, 80]), { headers: { "content-type": "image/png" } }),
@@ -217,31 +202,54 @@ export async function boot(
   const world: World = {
     requests: [],
     history: "pages",
-    delta: "pages",
+    imapDown: false,
+    imap: [],
+    noIdentity: false,
     noRefresh: false,
     rawFails: false,
     markFails: false,
   };
   const kept = new Map<string, string>();
-  const fake = resource({
-    label: "test.http",
-    factory: (): Http => async (request) => {
-      world.requests.push(request.clone());
-      const url = new URL(request.url);
-      const body = await request.text();
-      const found = fakes.find(([fits]) => fits(url, request.method));
+  const http: Http = async (request) => {
+    world.requests.push(request.clone());
+    const url = new URL(request.url);
+    const body = await request.text();
+    const found = fakes.find(([fits]) => fits(url, request.method));
 
-      return found ? found[1](world, url, body) : new Response("unknown", { status: 599 });
-    },
-  });
-  const vault = resource({
-    label: "test.vault",
-    factory: (): Vault => ({
-      get: async (name) => kept.get(name) ?? null,
-      set: async (name, value) => void kept.set(name, value),
-      delete: async (name) => kept.delete(name),
-    }),
-  });
+    return found ? found[1](world, url, body) : new Response("unknown", { status: 599 });
+  };
+  const secrets: SecretStore = {
+    get: async ({ name }) => kept.get(name) ?? null,
+    set: async ({ name, value }) => void kept.set(name, value),
+    delete: async ({ name }) => kept.delete(name),
+  };
+  const open: OpenImap = async (login) => {
+    if (world.imapDown || login.user !== "bo@outlook.com") throw new Error("AUTHENTICATE failed");
+    world.imap.push(`login:${login.host}`);
+    let usable = true;
+    return {
+      usable: () => usable,
+      list: async (limit) => {
+        world.imap.push("list");
+        if (world.imapDown) throw new Error("connection lost");
+        return { validity: "7", rows: imapRows.slice(0, limit) };
+      },
+      sources: async (uids) => {
+        world.imap.push(uids.length === 1 ? `source:${uids[0]}` : `sources:${uids.join(",")}`);
+        const known = world.rawFails
+          ? []
+          : uids.filter((uid) => imapRows.some((r) => String(r.uid) === uid));
+        return known.map((uid) => ({ uid, mime: new TextEncoder().encode(plain) }));
+      },
+      flag: async (uid, seen) => {
+        world.imap.push(`flag:${uid}:${seen}`);
+      },
+      close: async () => {
+        usable = false;
+        world.imap.push("logout");
+      },
+    };
+  };
   const stop = new AbortController();
   const clients =
     options.clients === "none"
@@ -251,10 +259,11 @@ export async function boot(
     clock: options.clock,
     capsules: [
       exits({ file: process.env.TINKER_EXITS }),
+      store({ file: ":memory:" }),
+      net({ fetch: http }),
+      keyring({ store: secrets }),
+      outlookImap({ open }),
       mailServer({
-        database: new Database(":memory:", { strict: true }),
-        http: fake,
-        vault,
         clients,
         origin,
         signer: "test-key",
@@ -282,15 +291,18 @@ export async function boot(
     return reply;
   };
 
-  /** Signs in through the real routes: start, the provider's redirect, the callback. */
   const signIn = async (provider: "google" | "microsoft") => {
     const start = await get(`/oauth/start/${provider}`);
     const state = new URL(start.headers.get("location") ?? "").searchParams.get("state");
-    const back = await get(`/oauth/callback?code=c-${provider}&state=${state}`);
+    const path = provider === "google" ? "/oauth/callback" : "/";
+    const back = await get(`${path}?code=c-${provider}&state=${state}`);
     return { start, back };
   };
 
+  let closed = false;
   const close = async () => {
+    if (closed) return;
+    closed = true;
     stop.abort();
     await tab.close();
     await server.close();
@@ -299,7 +311,6 @@ export async function boot(
   return { world, kept, server, tab, get, signIn, close };
 }
 
-/** Waits for a condition the server reaches by itself. */
 export async function until(ok: () => boolean, ms = 3000) {
   const end = Date.now() + ms;
   while (!ok()) {

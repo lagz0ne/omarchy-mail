@@ -39,7 +39,6 @@ const message = createRoute({
   path: "$id",
   validateSearch: z.object({ images: z.boolean().optional() }),
   loaderDeps: ({ search }) => ({ images: search.images === true }),
-  // The open is a call: the server fetches the source once, keeps it, and marks the mail read.
   loader: ({ context, params, deps, abortController }) =>
     context.scope.run(mail.api["mail.open"], {
       input: { id: params.id, images: deps.images },

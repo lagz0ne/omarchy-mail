@@ -1,4 +1,3 @@
-import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -13,19 +12,18 @@ import { routes } from "~/components/requests/index.server";
 import { telemetry } from "~/components/telemetry/index.server";
 
 import { mail } from "@/mail";
-import { keyring, netFetch } from "@/mail/host.server";
+import { outlookImap } from "@/mail/imap.server";
 import { mailServer } from "@/mail/index.server";
+import { keyring } from "@/mail/keyring.server";
+import { net } from "@/mail/net.server";
 import { mailLoads, mailOps } from "@/mail/ops.server";
 import { mailRoutes } from "@/mail/routes.server";
+import { store } from "@/mail/store.server";
 import { theme } from "@/theme";
 import { themeServer } from "@/theme/theme.server";
 
 import { pages } from "./pages";
 
-/**
- * The mail's own env, read once: the port (6245 is MAIL on a phone keypad), where the data and
- * the theme live (XDG), the OAuth apps, and the sync period. An empty value counts as unset.
- */
 const set = z
   .string()
   .optional()
@@ -45,7 +43,6 @@ const mailEnv = z
     MICROSOFT_CLIENT_ID: set,
     MAIL_SYNC_MS: set,
   })
-  // The places first, then the values: each step one transform.
   .transform((e) => ({
     ...e,
     HOME: e.HOME ?? "/tmp",
@@ -58,7 +55,6 @@ const mailEnv = z
   }))
   .transform((e) => ({
     port: e.PORT,
-    // The app is a page on this machine only: the host pins the socket to 127.0.0.1.
     origin: e.PUBLIC_ORIGIN ?? `http://127.0.0.1:${e.PORT}`,
     dataDir: e.MAIL_HOME ?? join(e.XDG_DATA_HOME, "omarchy-mail"),
     colors: e.THEME_FILE ?? join(e.XDG_STATE_HOME, "omarchy/current/theme/colors.toml"),
@@ -72,7 +68,6 @@ const mailEnv = z
     syncEvery: e.MAIL_SYNC_MS === undefined ? undefined : Number(e.MAIL_SYNC_MS),
   }));
 
-/** The host starts the server; importing this command opens nothing. */
 export default defineMain(async ({ env, args, signal, stdout, stderr, exit }) => {
   if (args.length) {
     stderr.write("Usage: mail\n");
@@ -84,7 +79,6 @@ export default defineMain(async ({ env, args, signal, stdout, stderr, exit }) =>
   const origin = own.origin;
   mkdirSync(own.dataDir, { recursive: true });
 
-  /** A built server sends telemetry from a worker thread; dev and tests keep it on this thread. */
   const sends = {
     service: env.OTEL_SERVICE_NAME,
     tracesUrl: env.VICTORIA_TRACES_URL === undefined ? undefined : new URL(env.VICTORIA_TRACES_URL),
@@ -119,17 +113,18 @@ export default defineMain(async ({ env, args, signal, stdout, stderr, exit }) =>
       serve({
         port: own.port,
         pages,
-        paths: ["/oauth/*"],
+        paths: ["/", "/oauth/*"],
         websocket: socket,
         handlers: [table],
         development: env.NODE_ENV !== "production",
         stdout,
       }),
       sink,
+      store({ file: join(own.dataDir, "mail.db") }),
+      net(),
+      keyring(),
+      outlookImap(),
       mailServer({
-        database: new Database(join(own.dataDir, "mail.db"), { create: true, strict: true }),
-        http: netFetch,
-        vault: keyring,
         clients: own.clients,
         origin,
         signer: crypto.randomUUID(),

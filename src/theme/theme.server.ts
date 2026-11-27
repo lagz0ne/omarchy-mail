@@ -3,10 +3,8 @@ import { z } from "zod";
 
 import { themeCss } from "./contract";
 
-/** The current theme's `colors.toml`. */
 const colorsFile = tag<string>({ label: "theme.file" });
 
-/** How often the file is read again, in ms. */
 const every = tag<number>({ label: "theme.every", default: 1_500 });
 
 const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/);
@@ -26,7 +24,6 @@ const colors = z.object({
   bright_red: hex.default("#de6145"),
 });
 
-/** TOML text as data; null when it does not parse (a file caught mid-write). */
 const tomlOf = operation({
   label: "theme.toml",
   input: z.string(),
@@ -39,10 +36,6 @@ const tomlOf = operation({
   },
 });
 
-/**
- * `colors.toml` text to the sheet; a missing file or a bad value gives the Swiss defaults. Text
- * that is not TOML gives null: the sheet served stays.
- */
 export const sheetOf = operation({
   label: "theme.sheet",
   input: z.string(),
@@ -57,7 +50,6 @@ export const sheetOf = operation({
   },
 });
 
-/** Reads the file; a sheet that differs from the one served is written. */
 export const refreshTheme = operation({
   label: "theme.refresh",
   depends: { file: colorsFile, css: themeCss.atScope.controller, sheetOf },
@@ -70,18 +62,15 @@ export const refreshTheme = operation({
   },
 });
 
-const worker = { role: "worker", explain: "Reads the theme file when it changes" } as const;
-
-/** The poll runs often and finds nothing most times: no span, no log line. */
 const quiet = namespace({ observe: false });
 
-/** Reads the theme file at start and again every `every` ms; a change writes the sheet. */
 export const themeServer = capsule({
   label: "theme.server",
   config: { file: colorsFile.required, every },
   hooks: {
     async start({ config, next, run, signal }) {
       await next();
+      const worker = { role: "worker", explain: "Reads the theme file when it changes" } as const;
       await run(refreshTheme, { ns: quiet }, worker);
 
       const timer = setInterval(() => void run(refreshTheme, { ns: quiet }, worker), config.every);

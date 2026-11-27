@@ -12,7 +12,6 @@ import { mail } from "@/mail";
 import { routeTree } from "@/routes";
 import { theme } from "@/theme";
 
-/** The tab's one root. A real page hide, or a hot swap of this module, closes it. */
 const stop = new AbortController();
 
 const app = createScope({
@@ -20,11 +19,8 @@ const app = createScope({
   capsules: [
     telemetry.browser({ service: "mail-browser", console }),
     ws.client({ url: `${location.origin.replace(/^http/, "ws")}/rpc` }),
-    // The mail: accounts and boxes live over the socket, every change a call. A box asks again
-    // each minute, so a write no one signalled still shows.
     mail.board({ read: ws.client, refetchInterval: { messages: 60_000 } }),
     mail.api({ remote: ws.client }),
-    // The desktop's colors, live.
     theme.board({ read: ws.client }),
   ],
 });

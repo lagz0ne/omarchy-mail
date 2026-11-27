@@ -1,49 +1,56 @@
-import { operation } from "@tinkered/core";
+import { operation, tag } from "@tinkered/core";
 import { z } from "zod";
 
 import { accessToken } from "./auth.server";
 import { mailBoard, provider } from "./contract";
-import { googleMark, googlePull, googleRaw } from "./google.server";
-import { microsoftMark, microsoftPull, microsoftRaw } from "./microsoft.server";
+import { googleMark, googlePull, googleRaw, googleRaws } from "./google.server";
+import { microsoftMark, microsoftPull, microsoftRaw, microsoftRaws } from "./microsoft.server";
 import type { Pulled } from "./provider.server";
-import { applySync, listAccounts, noteSync } from "./store.server";
+import { keepSource } from "./source.server";
+import { applySync, listAccounts, missingSources, noteSync } from "./store.server";
 
-// Sync: pull each account's inbox into the store, then tell every reader its box changed.
-
-/** A pull by the account's provider. */
 const pullBy = operation({
   label: "sync.pullBy",
-  input: z.object({ provider, access: z.string(), cursor: z.string().nullable() }),
+  input: z.object({
+    provider,
+    access: z.string(),
+    user: z.string(),
+    cursor: z.string().nullable(),
+  }),
   depends: { googlePull, microsoftPull },
-  run: async ({ googlePull, microsoftPull }, { input }): Promise<Pulled> => {
-    const call = { input: { access: input.access, cursor: input.cursor } };
-    return input.provider === "google" ? googlePull.run(call) : microsoftPull.run(call);
-  },
+  run: async ({ googlePull, microsoftPull }, { input }): Promise<Pulled> =>
+    input.provider === "google"
+      ? googlePull.run({ input: { access: input.access, cursor: input.cursor } })
+      : microsoftPull.run({ input: { access: input.access, user: input.user } }),
 });
 
-/** A message's source, by the account's provider. */
 export const rawBy = operation({
   label: "sync.rawBy",
-  input: z.object({ provider, access: z.string(), pid: z.string() }),
+  input: z.object({ provider, access: z.string(), user: z.string(), pid: z.string() }),
   depends: { googleRaw, microsoftRaw },
   run: async ({ googleRaw, microsoftRaw }, { input }) => {
-    const call = { input: { access: input.access, pid: input.pid } };
+    const call = { input: { access: input.access, user: input.user, pid: input.pid } };
     return input.provider === "google" ? googleRaw.run(call) : microsoftRaw.run(call);
   },
 });
 
-/** Sets a message's unread flag at its provider. */
 export const markBy = operation({
   label: "sync.markBy",
-  input: z.object({ provider, access: z.string(), pid: z.string(), unread: z.boolean() }),
+  input: z.object({
+    provider,
+    access: z.string(),
+    user: z.string(),
+    pid: z.string(),
+    unread: z.boolean(),
+  }),
   depends: { googleMark, microsoftMark },
   run: async ({ googleMark, microsoftMark }, { input }) => {
-    const call = { input: { access: input.access, pid: input.pid, unread: input.unread } };
+    const { access, user, pid, unread } = input;
+    const call = { input: { access, user, pid, unread } };
     await (input.provider === "google" ? googleMark.run(call) : microsoftMark.run(call));
   },
 });
 
-/** Writes one pull to the store; a reset clears the cursor, so the next pull is full. */
 const keepPull = operation({
   label: "sync.keep",
   input: z.object({ account: z.string(), pulled: z.custom<Pulled>() }),
@@ -65,25 +72,23 @@ const keepPull = operation({
   },
 });
 
-/** One account: a token, a pull (a second one after a reset), the store, then the readers. */
 export const syncAccount = operation({
   label: "sync.account",
-  input: z.object({ id: z.string(), provider, cursor: z.string().nullable() }),
+  input: z.object({ id: z.string(), provider, user: z.string(), cursor: z.string().nullable() }),
   depends: { accessToken, pullBy, keepPull },
   run: async ({ accessToken, pullBy, keepPull }, { input }) => {
     const access = await accessToken.run({
       input: { account: input.id, provider: input.provider },
     });
-    const { provider } = input;
-    let pulled = await pullBy.run({ input: { provider, access, cursor: input.cursor } });
+    const { provider, user } = input;
+    let pulled = await pullBy.run({ input: { provider, access, user, cursor: input.cursor } });
     if (pulled.kind === "reset") {
-      pulled = await pullBy.run({ input: { provider, access, cursor: null } });
+      pulled = await pullBy.run({ input: { provider, access, user, cursor: null } });
     }
     return keepPull.run({ input: { account: input.id, pulled } });
   },
 });
 
-/** Every account, one after another. A failure stays on its account, as a line to show. */
 export const syncAll = operation({
   label: "sync.all",
   depends: { listAccounts, syncAccount, noteSync, invalidate: mailBoard.invalidate },
@@ -91,7 +96,7 @@ export const syncAll = operation({
     const all = listAccounts.run();
     for (const a of all) {
       const done = await syncAccount.settle({
-        input: { id: a.id, provider: a.provider, cursor: a.cursor },
+        input: { id: a.id, provider: a.provider, user: a.email, cursor: a.cursor },
       });
       const error = done.status === "success" ? "" : String(Object(done).error?.kind ?? "failed");
       const cursor = done.status === "success" ? done.value : null;
@@ -99,5 +104,54 @@ export const syncAll = operation({
     }
     await invalidate.run({ input: { accounts: {}, messages: {} } });
     return { accounts: all.length };
+  },
+});
+
+const ahead = tag<number>({ label: "sync.ahead", default: 50 });
+
+const rawsBy = operation({
+  label: "sync.rawsBy",
+  input: z.object({ provider, access: z.string(), user: z.string(), pids: z.array(z.string()) }),
+  depends: { googleRaws, microsoftRaws },
+  run: async ({ googleRaws, microsoftRaws }, { input }) =>
+    input.provider === "google"
+      ? googleRaws.run({ input: { access: input.access, pids: input.pids } })
+      : microsoftRaws.run({ input }),
+});
+
+const prefetchAccount = operation({
+  label: "sync.prefetch.account",
+  input: z.object({ id: z.string(), provider, user: z.string() }),
+  depends: { missingSources, accessToken, rawsBy, keepSource, ahead },
+  run: async ({ missingSources, accessToken, rawsBy, keepSource, ahead }, { input }) => {
+    const pids = missingSources.run({ input: { account: input.id, limit: ahead } });
+    if (pids.length === 0) return 0;
+
+    const access = await accessToken.run({
+      input: { account: input.id, provider: input.provider },
+    });
+    const got = await rawsBy.run({
+      input: { provider: input.provider, access, user: input.user, pids },
+    });
+    for (const m of got) {
+      await keepSource.run({ input: { account: input.id, pid: m.pid, mime: m.mime } });
+    }
+    return got.length;
+  },
+});
+
+export const prefetchAll = operation({
+  label: "sync.prefetch",
+  depends: { listAccounts, prefetchAccount, invalidate: mailBoard.invalidate },
+  run: async ({ listAccounts, prefetchAccount, invalidate }) => {
+    let fetched = 0;
+    for (const a of listAccounts.run()) {
+      const done = await prefetchAccount.settle({
+        input: { id: a.id, provider: a.provider, user: a.email },
+      });
+      if (done.status === "success") fetched += done.value;
+    }
+    if (fetched > 0) await invalidate.run({ input: { messages: {} } });
+    return { fetched };
   },
 });

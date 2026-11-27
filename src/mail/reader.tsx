@@ -6,7 +6,6 @@ import { When } from "./inbox";
 
 type OpenAnswer = Opened | { kind: "gone"; id: string };
 
-/** People as a line: names, with the address on hover. */
 export function People({ list }: { list: Address[] }) {
   return (
     <>
@@ -20,7 +19,6 @@ export function People({ list }: { list: Address[] }) {
   );
 }
 
-/** A size as a short line: 12 KB, 1.4 MB. */
 export function Size({ bytes }: { bytes: number }) {
   const text =
     bytes < 1024 * 1024
@@ -29,7 +27,6 @@ export function Size({ bytes }: { bytes: number }) {
   return <>{text}</>;
 }
 
-/** `/box/$box/$id`: the open message. The body is its own document, in a frame with no scripts. */
 export function Reader({ out, box, images }: { out: OpenAnswer; box: string; images: boolean }) {
   switch (out.kind) {
     case "gone":

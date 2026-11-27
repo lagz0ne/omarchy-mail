@@ -1,49 +1,79 @@
-import { operation } from "@tinkered/core";
+import { operation, tag } from "@tinkered/core";
 import { z } from "zod";
 
 import { clients, origin } from "./config.server";
-import { send, sendJson } from "./net.server";
-import { type Pulled, pullInput, refreshed, signedIn } from "./provider.server";
+import { outlookImap } from "./imap.server";
+import { sendJson } from "./net.server";
+import { refreshed, signedIn } from "./provider.server";
 import type { Meta } from "./store.server";
 
-// Outlook.com: OAuth (public client, PKCE, personal accounts) and Microsoft Graph.
+const login = tag<string>({
+  label: "microsoft.login",
+  default: "https://login.microsoftonline.com/consumers/oauth2/v2.0",
+});
 
-const login = "https://login.microsoftonline.com/consumers/oauth2/v2.0";
-const graph = "https://graph.microsoft.com/v1.0/me";
-const scopes = "offline_access User.Read Mail.ReadWrite Mail.Send";
+const scopes = tag<string>({
+  label: "microsoft.scopes",
+  default: [
+    "offline_access",
+    "openid",
+    "email",
+    "profile",
+    "https://outlook.office.com/IMAP.AccessAsUser.All",
+    "https://outlook.office.com/SMTP.Send",
+  ].join(" "),
+});
 
-const fields =
-  "id,conversationId,subject,bodyPreview,receivedDateTime,isRead,hasAttachments,flag,from";
+const newest = tag<number>({ label: "microsoft.newest", default: 150 });
 
-/** The first pull takes the inbox of this many days back. */
-const firstDays = 60;
-/** A pull reads at most this many pages, so a huge first inbox cannot hold the loop. */
-const maxPages = 30;
+const fetched = z.object({
+  uid: z.number(),
+  envelope: z
+    .object({
+      messageId: z.string().default(""),
+      subject: z.string().default(""),
+      date: z.coerce.date().optional(),
+      from: z
+        .array(z.object({ name: z.string().default(""), address: z.string().default("") }))
+        .default([])
+        .transform((list) => list[0] ?? { name: "", address: "" }),
+    })
+    .default({ messageId: "", subject: "", from: { name: "", address: "" } }),
+  flags: z.instanceof(Set).default(new Set()),
+  bodyStructure: z.object({ type: z.string() }).optional(),
+});
 
 const tokens = z.object({
   access_token: z.string(),
   expires_in: z.number(),
   refresh_token: z.string().optional(),
+  id_token: z.string().optional(),
 });
 
-/** Microsoft only takes `localhost` for a desktop app's loopback redirect. */
+const claims = z.object({
+  email: z.string().optional(),
+  preferred_username: z.string().optional(),
+  name: z.string().optional(),
+});
+
 const microsoftClient = operation({
   label: "microsoft.client",
   depends: { clients, origin },
   run: ({ clients, origin }, { raise }) => {
     const own = clients.microsoft;
     if (!own) return raise("NotConfigured", { provider: "microsoft" });
-    const url = new URL("/oauth/callback", origin);
+
+    const url = new URL("/", origin);
     url.hostname = "localhost";
-    return { ...own, redirect: url.href };
+    return { ...own, redirect: url.href.replace(/\/$/, "") };
   },
 });
 
 export const microsoftAuthUrl = operation({
   label: "microsoft.authUrl",
   input: z.object({ state: z.string(), challenge: z.string() }),
-  depends: { microsoftClient },
-  run: ({ microsoftClient }, { input }) => {
+  depends: { microsoftClient, login, scopes },
+  run: ({ microsoftClient, login, scopes }, { input }) => {
     const own = microsoftClient.run();
     const url = new URL(`${login}/authorize`);
     url.search = new URLSearchParams({
@@ -61,11 +91,24 @@ export const microsoftAuthUrl = operation({
   },
 });
 
+const whoFrom = operation({
+  label: "microsoft.who",
+  input: z.string(),
+  run: (_, { input, raise }) => {
+    const part = input.split(".")[1] ?? "";
+    const found = claims.safeParse(JSON.parse(Buffer.from(part, "base64url").toString() || "{}"));
+    const email = found.success ? (found.data.email ?? found.data.preferred_username) : undefined;
+    if (!email) return raise("NoIdentity", { provider: "microsoft" });
+
+    return { email, name: (found.success && found.data.name) || email };
+  },
+});
+
 export const microsoftExchange = operation({
   label: "microsoft.exchange",
   input: z.object({ code: z.string(), verifier: z.string() }),
-  depends: { microsoftClient, sendJson },
-  run: async ({ microsoftClient, sendJson }, { input, clock, raise }) => {
+  depends: { microsoftClient, sendJson, whoFrom, login, scopes },
+  run: async ({ microsoftClient, sendJson, whoFrom, login, scopes }, { input, clock, raise }) => {
     const own = microsoftClient.run();
     const got = tokens.parse(
       await sendJson.run({
@@ -85,20 +128,13 @@ export const microsoftExchange = operation({
     );
     if (!got.refresh_token) return raise("NoRefreshToken", { provider: "microsoft" });
 
-    const me = z
-      .object({
-        displayName: z.string().nullable(),
-        mail: z.string().nullable(),
-        userPrincipalName: z.string(),
-      })
-      .parse(await sendJson.run({ input: { url: graph, token: got.access_token } }));
-    const email = me.mail ?? me.userPrincipalName;
+    const who = whoFrom.run({ input: got.id_token ?? "" });
     return signedIn.parse({
       refresh: got.refresh_token,
       access: got.access_token,
       expires: clock.currentTimeMillis() + got.expires_in * 1000,
-      email,
-      name: me.displayName ?? email,
+      email: who.email,
+      name: who.name,
     });
   },
 });
@@ -106,8 +142,8 @@ export const microsoftExchange = operation({
 export const microsoftRefresh = operation({
   label: "microsoft.refresh",
   input: z.object({ refresh: z.string() }),
-  depends: { microsoftClient, sendJson },
-  run: async ({ microsoftClient, sendJson }, { input, clock }) => {
+  depends: { microsoftClient, sendJson, login, scopes },
+  run: async ({ microsoftClient, sendJson, login, scopes }, { input, clock }) => {
     const own = microsoftClient.run();
     const got = tokens.parse(
       await sendJson.run({
@@ -131,134 +167,63 @@ export const microsoftRefresh = operation({
   },
 });
 
-/** A text field Graph may leave out: "" then. */
-const text = z
-  .string()
-  .nullish()
-  .transform((v) => v ?? "");
-
-const item = z.object({
-  id: z.string(),
-  "@removed": z.unknown().optional(),
-  conversationId: text,
-  subject: text,
-  bodyPreview: text,
-  receivedDateTime: text,
-  isRead: z.boolean().nullish(),
-  hasAttachments: z.boolean().nullish(),
-  flag: z.object({ flagStatus: z.string() }).nullish(),
-  from: z
-    .object({ emailAddress: z.object({ name: text, address: text }) })
-    .nullish()
-    .transform((v) => v?.emailAddress ?? { name: "", address: "" }),
-});
-
-const page = z.object({
-  value: z.array(item),
-  "@odata.nextLink": z.string().optional(),
-  "@odata.deltaLink": z.string().optional(),
-});
-
-/** One Graph message as a list row. */
-const microsoftRow = operation({
-  label: "microsoft.row",
-  input: item,
-  run: (_, { input: m }): Meta => ({
-    pid: m.id,
-    thread: m.conversationId || m.id,
-    fromName: m.from.name || m.from.address,
-    fromAddr: m.from.address,
-    subject: m.subject,
-    snippet: m.bodyPreview,
-    date: Date.parse(m.receivedDateTime) || 0,
-    unread: m.isRead === false,
-    starred: m.flag?.flagStatus === "flagged",
-    attach: m.hasAttachments === true,
-  }),
-});
-
-/** One page of a delta query: its rows, its removals, and the link to go on with. */
-const microsoftPage = operation({
-  label: "microsoft.page",
-  input: z.object({ access: z.string(), url: z.string() }),
-  depends: { send, microsoftRow },
-  run: async ({ send, microsoftRow }, { input, raise }) => {
-    const res = await send.run({
-      input: { url: input.url, token: input.access, headers: { prefer: "odata.maxpagesize=50" } },
-    });
-    if (res.status === 410 || res.status === 400) return { kind: "reset" as const };
-    if (!res.ok) return raise("ProviderFailed", { status: res.status, url: input.url, body: "" });
-
-    const got = page.parse(await res.json());
-    const kept = got.value.filter((m) => m["@removed"] === undefined);
-    return {
-      kind: "page" as const,
-      rows: kept.map((m) => microsoftRow.run({ input: m })),
-      removed: got.value.filter((m) => m["@removed"] !== undefined).map((m) => m.id),
-      next: got["@odata.nextLink"],
-      delta: got["@odata.deltaLink"],
-    };
-  },
-});
-
-/**
- * A delta query of the inbox: from the cursor (a delta link), or from the first window. It
- * follows the next links until the delta link, which is the next cursor. A dead link is a reset.
- */
 export const microsoftPull = operation({
   label: "microsoft.pull",
-  input: pullInput,
-  depends: { microsoftPage },
-  run: async ({ microsoftPage }, { input, clock }): Promise<Pulled> => {
-    const since = new Date(clock.currentTimeMillis() - firstDays * 86_400_000).toISOString();
-    const first = `${graph}/mailFolders/inbox/messages/delta?$select=${fields}&$filter=receivedDateTime ge ${since}`;
-    const rows: Meta[] = [];
-    const removed: string[] = [];
-
-    const kind = input.cursor === null ? ("full" as const) : ("delta" as const);
-    let url: string | undefined = input.cursor ?? first;
-
-    for (let n = 0; url && n < maxPages; n++) {
-      const got: Awaited<ReturnType<typeof microsoftPage.run>> = await microsoftPage.run({
-        input: { access: input.access, url },
-      });
-      if (got.kind === "reset") return got;
-
-      rows.push(...got.rows);
-      removed.push(...got.removed);
-      if (got.delta) return { kind, rows, removed, cursor: got.delta };
-      url = got.next;
-    }
-
-    // Past the page cap: keep what came, and start from the next link next time.
-    return { kind: "delta", rows, removed, cursor: url ?? first };
+  input: z.object({ access: z.string(), user: z.string() }),
+  depends: { imap: outlookImap, newest },
+  run: async ({ imap, newest }, { input }) => {
+    const box = await imap.list({ user: input.user, access: input.access, limit: newest });
+    const rows: Meta[] = z
+      .array(fetched)
+      .parse(box.rows)
+      .map((m) => ({
+        pid: String(m.uid),
+        thread: m.envelope.messageId || String(m.uid),
+        fromName: m.envelope.from.name || m.envelope.from.address,
+        fromAddr: m.envelope.from.address,
+        subject: m.envelope.subject,
+        snippet: "",
+        date: m.envelope.date?.getTime() ?? 0,
+        unread: !m.flags.has("\\Seen"),
+        starred: m.flags.has("\\Flagged"),
+        attach: m.bodyStructure?.type === "multipart/mixed",
+      }));
+    return { kind: "full" as const, rows, removed: [], cursor: box.validity };
   },
 });
 
 export const microsoftRaw = operation({
   label: "microsoft.raw",
-  input: z.object({ access: z.string(), pid: z.string() }),
-  depends: { send },
-  run: async ({ send }, { input, raise }) => {
-    const url = `${graph}/messages/${encodeURIComponent(input.pid)}/$value`;
-    const res = await send.run({ input: { url, token: input.access } });
-    if (!res.ok) return raise("ProviderFailed", { status: res.status, url, body: "" });
-    return new Uint8Array(await res.arrayBuffer());
+  input: z.object({ access: z.string(), user: z.string(), pid: z.string() }),
+  depends: { imap: outlookImap },
+  run: async ({ imap }, { input, raise }) => {
+    const mime = await imap.source({ user: input.user, access: input.access, uid: input.pid });
+    if (!mime) return raise("ProviderFailed", { status: 404, url: `imap:${input.pid}`, body: "" });
+
+    return mime;
+  },
+});
+
+export const microsoftRaws = operation({
+  label: "microsoft.raws",
+  input: z.object({ access: z.string(), user: z.string(), pids: z.array(z.string()) }),
+  depends: { imap: outlookImap },
+  run: async ({ imap }, { input }) => {
+    const found = await imap.sources({ user: input.user, access: input.access, uids: input.pids });
+    return found.map((m) => ({ pid: m.uid, mime: m.mime }));
   },
 });
 
 export const microsoftMark = operation({
   label: "microsoft.mark",
-  input: z.object({ access: z.string(), pid: z.string(), unread: z.boolean() }),
-  depends: { sendJson },
-  run: async ({ sendJson }, { input }) => {
-    await sendJson.run({
-      input: {
-        url: `${graph}/messages/${encodeURIComponent(input.pid)}`,
-        method: "PATCH",
-        token: input.access,
-        json: { isRead: !input.unread },
-      },
+  input: z.object({ access: z.string(), user: z.string(), pid: z.string(), unread: z.boolean() }),
+  depends: { imap: outlookImap },
+  run: async ({ imap }, { input }) => {
+    await imap.flag({
+      user: input.user,
+      access: input.access,
+      uid: input.pid,
+      seen: !input.unread,
     });
   },
 });

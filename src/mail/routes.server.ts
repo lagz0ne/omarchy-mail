@@ -4,17 +4,14 @@ import { z } from "zod";
 import { routes } from "~/components/requests/index.server";
 
 import { beginSignIn, finishSignIn } from "./auth.server";
-import { http, origin } from "./config.server";
+import { origin } from "./config.server";
 import { provider } from "./contract";
+import { net } from "./net.server";
 import { sourceOf, splitId } from "./ops.server";
 import { attachmentOf, proxyLink } from "./render.server";
 import { listAccounts, saveAccount } from "./store.server";
-import { syncAll } from "./sync.server";
+import { prefetchAll, syncAll } from "./sync.server";
 
-// The plain HTTP side: the sign-in redirects, attachments, and the image proxy. The page links to
-// them; it never fetches them itself.
-
-/** A short page for a sign-in that could not go on. */
 const notice = operation({
   label: "route.notice",
   input: z.object({ title: z.string(), text: z.string(), status: z.number() }),
@@ -26,7 +23,6 @@ const notice = operation({
     ),
 });
 
-/** `GET /oauth/start/{provider}`: off to the provider's sign-in page. */
 export const oauthStart = operation({
   label: "route.oauthStart",
   input: z.object({ provider }),
@@ -44,7 +40,6 @@ export const oauthStart = operation({
   },
 });
 
-/** `GET /oauth/callback`: the provider sent the person back. Reply first, then sync. */
 export const oauthCallback = operation({
   label: "route.oauthCallback",
   input: z.object({
@@ -52,7 +47,15 @@ export const oauthCallback = operation({
     state: z.string().optional(),
     error: z.string().optional(),
   }),
-  depends: { finishSignIn, saveAccount, syncAll, notice, origin, reply: routes.reply },
+  depends: {
+    finishSignIn,
+    saveAccount,
+    syncAll,
+    prefetchAll,
+    notice,
+    origin,
+    reply: routes.reply,
+  },
   run: async (deps, { input }) => {
     if (!input.code || !input.state) {
       return deps.notice.run({
@@ -82,11 +85,26 @@ export const oauthCallback = operation({
     });
     deps.reply(Response.redirect(`${deps.origin}/box/${who.id}`, 302));
     await deps.syncAll.run();
+    await deps.prefetchAll.run();
     return undefined;
   },
 });
 
-/** The bytes of one attachment of a message the store has. */
+export const rootRoute = operation({
+  label: "route.root",
+  input: z.object({
+    code: z.string().optional(),
+    state: z.string().optional(),
+    error: z.string().optional(),
+  }),
+  depends: { oauthCallback, origin },
+  run: async ({ oauthCallback, origin }, { input }) => {
+    if (input.state === undefined) return Response.redirect(`${origin}/box/all`, 302);
+
+    return oauthCallback.run({ input });
+  },
+});
+
 const serveAttachment = operation({
   label: "route.serveAttachment",
   input: z.object({ id: z.string(), part: z.string() }),
@@ -97,7 +115,9 @@ const serveAttachment = operation({
     const owner = listAccounts.run().find((a) => a.id === account);
     if (!owner) return new Response(null, { status: 404 });
 
-    const mime = await sourceOf.run({ input: { account, provider: owner.provider, pid } });
+    const mime = await sourceOf.run({
+      input: { account, provider: owner.provider, user: owner.email, pid },
+    });
     const found = await attachmentOf.run({ input: { mime, part: input.part } });
     if (!found) return new Response(null, { status: 404 });
     return new Response(found.bytes, {
@@ -112,7 +132,6 @@ const serveAttachment = operation({
   },
 });
 
-/** `GET /api/att/{id}/{part}`: an attachment by its place. */
 export const attachmentRoute = operation({
   label: "route.attachment",
   input: z.object({ id: z.string(), part: z.string() }),
@@ -120,7 +139,6 @@ export const attachmentRoute = operation({
   run: async ({ serveAttachment }, { input }) => serveAttachment.run({ input }),
 });
 
-/** `GET /api/att/{id}/cid/{cid}`: an inline image by its content id. */
 export const cidRoute = operation({
   label: "route.cid",
   input: z.object({ id: z.string(), cid: z.string() }),
@@ -129,17 +147,16 @@ export const cidRoute = operation({
     serveAttachment.run({ input: { id: input.id, part: `cid/${input.cid}` } }),
 });
 
-/** `GET /api/img?u&s`: a remote image, fetched here, for a link this server signed. */
 export const imageRoute = operation({
   label: "route.image",
   input: z.object({ u: z.string().url(), s: z.string() }),
-  depends: { proxyLink, http },
-  run: async ({ proxyLink, http }, { input }) => {
+  depends: { proxyLink, net },
+  run: async ({ proxyLink, net }, { input }) => {
     const signed = new URL(proxyLink.run({ input: input.u })).searchParams.get("s");
     if (signed !== input.s || !/^https?:/i.test(input.u)) {
       return new Response(null, { status: 403 });
     }
-    const res = await http(
+    const res = await net.fetch(
       new Request(input.u, { headers: { accept: "image/*" }, redirect: "follow" }),
     );
 
@@ -151,10 +168,10 @@ export const imageRoute = operation({
   },
 });
 
-/** The table rows this feature adds to the cmd's routes. */
 export const mailRoutes = {
   "GET /oauth/start/{provider}": oauthStart,
   "GET /oauth/callback": oauthCallback,
+  "GET /": rootRoute,
   "GET /api/att/{id}/cid/{cid}": cidRoute,
   "GET /api/att/{id}/{part}": attachmentRoute,
   "GET /api/img": imageRoute,

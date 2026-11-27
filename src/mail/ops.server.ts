@@ -4,11 +4,11 @@ import { z } from "zod";
 import { accessToken, forgetTokens } from "./auth.server";
 import { mailApi, mailBoard } from "./contract";
 import { renderMessage } from "./render.server";
+import { keepSource } from "./source.server";
 import {
   dropAccount,
   findMessage,
   flagMessage,
-  keepRaw,
   listAccounts,
   loadAccounts,
   loadMessages,
@@ -16,9 +16,6 @@ import {
 } from "./store.server";
 import { markBy, rawBy, syncAll } from "./sync.server";
 
-// The server's side of `mailApi`, and the board's loads.
-
-/** `g-1a2b3c:18c0f…` → the account and the provider's own id. */
 export const splitId = operation({
   label: "mail.splitId",
   input: z.string(),
@@ -28,7 +25,6 @@ export const splitId = operation({
   },
 });
 
-/** A message's account, as the store has it; null when either is gone. */
 const ownerOf = operation({
   label: "mail.owner",
   input: z.string(),
@@ -41,34 +37,35 @@ const ownerOf = operation({
   },
 });
 
-/** A message's source: kept from an earlier open, or fetched now and kept. */
 export const sourceOf = operation({
   label: "mail.source",
   input: z.object({
     account: z.string(),
     provider: z.enum(["google", "microsoft"]),
+    user: z.string(),
     pid: z.string(),
   }),
-  depends: { readRaw, keepRaw, accessToken, rawBy },
-  run: async ({ readRaw, keepRaw, accessToken, rawBy }, { input }) => {
+  depends: { readRaw, keepSource, accessToken, rawBy },
+  run: async ({ readRaw, keepSource, accessToken, rawBy }, { input }) => {
     const kept = readRaw.run({ input: { account: input.account, pid: input.pid } });
     if (kept) return kept;
     const access = await accessToken.run({
       input: { account: input.account, provider: input.provider },
     });
 
-    const mime = await rawBy.run({ input: { provider: input.provider, access, pid: input.pid } });
-    keepRaw.run({ input: { account: input.account, pid: input.pid, mime } });
+    const { provider, user, pid } = input;
+    const mime = await rawBy.run({ input: { provider, access, user, pid } });
+    await keepSource.run({ input: { account: input.account, pid, mime } });
     return mime;
   },
 });
 
-/** Sets unread here and at the provider, then tells the readers. */
 const setUnread = operation({
   label: "mail.setUnread",
   input: z.object({
     account: z.string(),
     provider: z.enum(["google", "microsoft"]),
+    user: z.string(),
     pid: z.string(),
     unread: z.boolean(),
   }),
@@ -78,14 +75,13 @@ const setUnread = operation({
       input: { account: input.account, provider: input.provider },
     });
     await markBy.run({
-      input: { provider: input.provider, access, pid: input.pid, unread: input.unread },
+      input: { ...input, access },
     });
     flagMessage.run({ input: { account: input.account, pid: input.pid, unread: input.unread } });
     await invalidate.run({ input: { messages: {} } });
   },
 });
 
-/** Opens a message: its page for the frame. An unread one is marked read, if the provider lets. */
 export const openMessage = operation({
   label: "mail.open.do",
   input: mailApi["mail.open"].input,
@@ -96,13 +92,18 @@ export const openMessage = operation({
     const { owner, pid } = found;
 
     const mime = await sourceOf.run({
-      input: { account: owner.id, provider: owner.provider, pid },
+      input: { account: owner.id, provider: owner.provider, user: owner.email, pid },
     });
     const page = await renderMessage.run({ input: { id: input.id, mime, images: input.images } });
-    // Read at the provider is a courtesy: offline or signed out, the message still opens.
     if (found.unread) {
       await setUnread.settle({
-        input: { account: owner.id, provider: owner.provider, pid, unread: false },
+        input: {
+          account: owner.id,
+          provider: owner.provider,
+          user: owner.email,
+          pid,
+          unread: false,
+        },
       });
     }
     return { kind: "message" as const, id: input.id, ...page };
@@ -120,6 +121,7 @@ export const markMessage = operation({
       input: {
         account: found.owner.id,
         provider: found.owner.provider,
+        user: found.owner.email,
         pid: found.pid,
         unread: input.unread,
       },
@@ -148,7 +150,6 @@ export const removeAccount = operation({
   },
 });
 
-/** The server's side of `mailApi`, by address. */
 export const mailOps = {
   "mail.open": openMessage,
   "mail.mark": markMessage,
@@ -156,5 +157,4 @@ export const mailOps = {
   "account.remove": removeAccount,
 } as const;
 
-/** The board's loads: the store sorts and cuts each window. */
 export const mailLoads = { accounts: loadAccounts, messages: loadMessages } as const;

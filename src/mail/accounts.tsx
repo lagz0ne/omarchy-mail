@@ -4,7 +4,6 @@ import { memo } from "react";
 import { type Account, mailApi, mailBoard } from "./contract";
 import { When } from "./inbox";
 
-/** `/accounts`: who is signed in, and the doors to add Gmail or Outlook. */
 export function Accounts() {
   const list = useData(mailBoard.accounts.where({}));
 
@@ -18,7 +17,6 @@ export function Accounts() {
         ))}
       </ul>
       <div className="actions">
-        {/* A server path: the sign-in leaves the app and comes back to it. */}
         <a rel="external" className="key" href="/oauth/start/google">
           Add Gmail
         </a>

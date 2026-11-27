@@ -10,8 +10,6 @@ import { afterAll, expect, test } from "vite-plus/test";
 import { theme } from "@/theme";
 import { themeServer } from "@/theme/theme.server";
 
-// The theme follows the desktop: the server reads colors.toml, every tab gets the sheet.
-
 const folder = mkdtempSync(join(tmpdir(), "theme-"));
 afterAll(() => rmSync(folder, { recursive: true, force: true }));
 
@@ -48,12 +46,10 @@ test("a theme switch reaches the tab; a broken file gives the Swiss defaults", a
   expect(sheet.get()).toContain("color-scheme:light");
   expect(sheet.get()).toContain("--warm:#de6145");
 
-  // Caught mid-write: the last good sheet stays.
   writeFileSync(file, "this is = not [toml");
   await new Promise((r) => setTimeout(r, 50));
   expect(sheet.get()).toContain("--bg:#f1f0ec");
 
-  // A bad value, then no file at all: the Swiss defaults.
   writeFileSync(file, 'background = "red"\n');
   await until(() => sheet.get().includes("--bg:#101315"));
   rmSync(file);
