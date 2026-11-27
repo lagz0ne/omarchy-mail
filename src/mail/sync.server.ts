@@ -98,7 +98,11 @@ export const syncAll = operation({
       const done = await syncAccount.settle({
         input: { id: a.id, provider: a.provider, user: a.email, cursor: a.cursor },
       });
-      const error = done.status === "success" ? "" : String(Object(done).error?.kind ?? "failed");
+      const failure = Object(Object(done).error);
+      const error =
+        done.status === "success"
+          ? ""
+          : [failure.kind ?? "failed", failure.payload?.status].filter(Boolean).join(" ");
       const cursor = done.status === "success" ? done.value : null;
       noteSync.run({ input: { id: a.id, cursor, at: clock.currentTimeMillis(), error } });
     }

@@ -175,7 +175,24 @@ test("Gmail delta: added, deleted and gone messages; a dead cursor pulls the who
 
   w.world.history = "broken";
   await w.tab.run(mail.api["mail.sync"], { input: {} });
-  await until(() => seen.list()[0]?.error === "ProviderFailed");
+  await until(() => seen.list()[0]?.error === "ProviderFailed 500");
+});
+
+test("Gmail busy: a 429 is tried again with a pause; one that stays shows its status", async () => {
+  const w = await world();
+  const seen = w.accounts();
+  const all = w.box("all");
+  await w.signIn("google");
+  await until(() => all.rows().length === 2 && seen.list()[0]?.syncedAt !== 0);
+
+  w.world.busy = 3;
+  await w.tab.run(mail.api["mail.sync"], { input: {} });
+  await until(() => seen.list()[0]?.error === "");
+  expect(w.world.busy).toBe(0);
+
+  w.world.busy = 1_000;
+  await w.tab.run(mail.api["mail.sync"], { input: {} });
+  await until(() => seen.list()[0]?.error === "ProviderFailed 429");
 });
 
 test("Outlook: sign in at the root, IMAP fills the inbox, open and flag over IMAP", async () => {

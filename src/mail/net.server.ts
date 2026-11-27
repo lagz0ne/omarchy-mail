@@ -28,8 +28,14 @@ const ask = z.object({
   headers: z.record(z.string(), z.string()).optional(),
 });
 
-export const send = operation({
-  label: "net.send",
+const retries = tag<number>({ label: "net.retries", default: 3 });
+
+export const backoff = tag<number>({ label: "net.backoff", default: 500 });
+
+const busy = tag<readonly number[]>({ label: "net.busy", default: [429, 500, 502, 503, 504] });
+
+const once = operation({
+  label: "net.once",
   input: ask,
   depends: { net },
   run: async ({ net }, { input, signal }) => {
@@ -44,6 +50,21 @@ export const send = operation({
     return net.fetch(
       new Request(input.url, { method: input.method ?? "GET", headers, body, signal }),
     );
+  },
+});
+
+export const send = operation({
+  label: "net.send",
+  input: ask,
+  depends: { once, retries, backoff, busy },
+  run: async ({ once, retries, backoff, busy }, { input, clock, signal }) => {
+    let res = await once.run({ input });
+    for (let n = 0; n < retries && busy.includes(res.status); n++) {
+      const after = Number(res.headers.get("retry-after"));
+      await clock.sleep(after > 0 ? after * 1000 : backoff * 2 ** n, signal);
+      res = await once.run({ input });
+    }
+    return res;
   },
 });
 

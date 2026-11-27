@@ -8,7 +8,7 @@ import { mail } from "@/mail";
 import { outlookImap, type OpenImap } from "@/mail/imap.server";
 import { mailServer } from "@/mail/index.server";
 import { keyring, type SecretStore } from "@/mail/keyring.server";
-import { net, type Http } from "@/mail/net.server";
+import { backoff, net, type Http } from "@/mail/net.server";
 import { mailLoads, mailOps } from "@/mail/ops.server";
 import { mailRoutes } from "@/mail/routes.server";
 import { store } from "@/mail/store.server";
@@ -84,6 +84,7 @@ export type World = {
   noRefresh: boolean;
   rawFails: boolean;
   markFails: boolean;
+  busy: number;
 };
 
 type Fake = [
@@ -208,6 +209,7 @@ export async function boot(
     noRefresh: false,
     rawFails: false,
     markFails: false,
+    busy: 0,
   };
   const kept = new Map<string, string>();
   const http: Http = async (request) => {
@@ -215,6 +217,13 @@ export async function boot(
     const url = new URL(request.url);
     const body = await request.text();
     const found = fakes.find(([fits]) => fits(url, request.method));
+    if (url.host === "gmail.googleapis.com" && world.busy > 0) {
+      world.busy--;
+      return new Response("{}", {
+        status: 429,
+        headers: { "retry-after": world.busy > 1 ? "0" : "" },
+      });
+    }
 
     return found ? found[1](world, url, body) : new Response("unknown", { status: 599 });
   };
@@ -257,6 +266,7 @@ export async function boot(
       : { google: { id: "g-id", secret: "g-secret" }, microsoft: { id: "m-id" } };
   const server = await createScope({
     clock: options.clock,
+    tags: [backoff(1)],
     capsules: [
       exits({ file: process.env.TINKER_EXITS }),
       store({ file: ":memory:" }),

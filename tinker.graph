@@ -36,7 +36,8 @@ microsoft.raws exits{value} reads{} writes{} calls{}
 microsoft.refresh exits{value} reads{} writes{} calls{microsoft.client,net.json}
 microsoft.who exits{value} reads{} writes{} calls{}
 net.json exits{value} reads{} writes{} calls{net.send}
-net.send exits{value} reads{} writes{} calls{}
+net.once exits{value} reads{} writes{} calls{}
+net.send exits{value} reads{} writes{} calls{net.once}
 render.attachment exits{value} reads{} writes{} calls{}
 render.message exits{value} reads{} writes{} calls{render.proxyLink,render.text}
 render.proxyLink exits{value} reads{} writes{} calls{}

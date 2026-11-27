@@ -39,6 +39,8 @@ const scopes = tag<string>({
 
 const firstPull = tag<number>({ label: "google.firstPull", default: 150 });
 
+const parallel = tag<number>({ label: "google.parallel", default: 4 });
+
 const tokens = z.object({
   access_token: z.string(),
   expires_in: z.number(),
@@ -197,12 +199,12 @@ const googleMeta = operation({
 const googleMetas = operation({
   label: "google.metas",
   input: z.object({ access: z.string(), pids: z.array(z.string()) }),
-  depends: { googleMeta },
-  run: async ({ googleMeta }, { input }) => {
+  depends: { googleMeta, parallel },
+  run: async ({ googleMeta, parallel }, { input }) => {
     const rows: Meta[] = [];
     const removed: string[] = [];
-    for (let at = 0; at < input.pids.length; at += 8) {
-      const batch = input.pids.slice(at, at + 8);
+    for (let at = 0; at < input.pids.length; at += parallel) {
+      const batch = input.pids.slice(at, at + parallel);
       const found = await Promise.all(
         batch.map((pid) => googleMeta.run({ input: { access: input.access, pid } })),
       );
@@ -315,11 +317,11 @@ export const googleRaw = operation({
 export const googleRaws = operation({
   label: "google.raws",
   input: z.object({ access: z.string(), pids: z.array(z.string()) }),
-  depends: { googleRaw },
-  run: async ({ googleRaw }, { input }) => {
+  depends: { googleRaw, parallel },
+  run: async ({ googleRaw, parallel }, { input }) => {
     const found: { pid: string; mime: Uint8Array<ArrayBuffer> }[] = [];
-    for (let at = 0; at < input.pids.length; at += 8) {
-      const batch = input.pids.slice(at, at + 8);
+    for (let at = 0; at < input.pids.length; at += parallel) {
+      const batch = input.pids.slice(at, at + parallel);
       const got = await Promise.all(
         batch.map((pid) => googleRaw.settle({ input: { access: input.access, pid } })),
       );
