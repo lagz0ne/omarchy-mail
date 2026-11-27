@@ -1,8 +1,6 @@
 import { operation } from "@tinkered/core";
 import { z } from "zod";
 
-import { routes } from "~/components/requests/index.server";
-
 import { beginSignIn, finishSignIn } from "./auth.server";
 import { origin } from "./config.server";
 import { provider } from "./contract";
@@ -10,7 +8,7 @@ import { net } from "./net.server";
 import { sourceOf, splitId } from "./ops.server";
 import { attachmentOf, proxyLink } from "./render.server";
 import { listAccounts, saveAccount } from "./store.server";
-import { prefetchAll, syncAll } from "./sync.server";
+import { queueTask } from "./sync.server";
 import { throttle } from "./throttle.server";
 
 const notice = operation({
@@ -51,11 +49,9 @@ export const oauthCallback = operation({
   depends: {
     finishSignIn,
     saveAccount,
-    syncAll,
-    prefetchAll,
+    queueTask,
     notice,
     origin,
-    reply: routes.reply,
   },
   run: async (deps, { input }) => {
     if (!input.code || !input.state) {
@@ -84,10 +80,8 @@ export const oauthCallback = operation({
     deps.saveAccount.run({
       input: { id: who.id, provider: who.provider, email: who.email, name: who.name },
     });
-    deps.reply(Response.redirect(`${deps.origin}/box/${who.id}`, 302));
-    await deps.syncAll.run();
-    await deps.prefetchAll.run();
-    return undefined;
+    deps.queueTask.run({ input: { task: { kind: "inbox", account: who.id }, priority: "view" } });
+    return Response.redirect(`${deps.origin}/box/${who.id}`, 302);
   },
 });
 

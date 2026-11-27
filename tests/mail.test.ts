@@ -187,13 +187,43 @@ test("Gmail busy: a 429 is tried again with a pause; one that stays shows its st
 
   w.world.busy = 3;
   await w.tab.run(mail.api["mail.sync"], { input: {} });
-  await until(() => seen.list()[0]?.error === "");
-  expect(w.world.busy).toBe(0);
+  await until(() => w.world.busy === 0);
+  await new Promise((r) => setTimeout(r, 50));
+  expect(seen.list()[0]?.error).toBe("");
 
   w.world.busy = 1_000;
   await w.tab.run(mail.api["mail.sync"], { input: {} });
   await until(() => seen.list()[0]?.error === "ProviderFailed 429");
 });
+
+test("broken replies: each kind fails its sync with a name, and is logged", async () => {
+  const w = await world();
+  const seen = w.accounts();
+  const all = w.box("all");
+  await w.signIn("google");
+  await until(() => all.rows().length === 2 && seen.list()[0]?.syncedAt !== 0);
+  const logged = (message: string) => w.world.logs.filter((l) => l.message === message);
+
+  const cases = [
+    ["garbage", "ProviderMalformed", "provider.malformed"],
+    ["shape", "ProviderMalformed", "provider.malformed"],
+    ["cut", "ProviderIncomplete 200", "provider.incomplete"],
+    ["down", "ProviderUnreachable", "provider.unreachable"],
+    ["stall", "ProviderTimeout", "provider.timeout"],
+  ] as const;
+  for (const [broken, error, message] of cases) {
+    w.world.broken = broken;
+    await w.tab.run(mail.api["mail.sync"], { input: {} });
+    await until(() => seen.list()[0]?.error === error);
+    expect(logged(message).length).toBeGreaterThan(0);
+
+    w.world.broken = "none";
+    await w.tab.run(mail.api["mail.sync"], { input: {} });
+    await until(() => seen.list()[0]?.error === "");
+  }
+  expect(logged("provider.slow").length).toBeGreaterThan(0);
+  expect(logged("provider.timeout")[0]?.attributes).toMatchObject({ family: "google" });
+}, 15_000);
 
 test("Outlook: sign in at the root, IMAP fills the inbox, open and flag over IMAP", async () => {
   const w = await world();
@@ -210,11 +240,11 @@ test("Outlook: sign in at the root, IMAP fills the inbox, open and flag over IMA
   expect(seen.list()).toMatchObject([
     { provider: "microsoft", email: "bo@outlook.com", name: "bo@outlook.com" },
   ]);
-  const one = all.rows().find((r) => r.id.endsWith(":11"));
+  const one = all.rows().find((r) => r.id.endsWith(":INBOX/11"));
   expect(one).toMatchObject({ fromName: "Cy", unread: true, starred: true, attach: true });
-  expect(all.rows().find((r) => r.id.endsWith(":12"))).toMatchObject({
+  expect(all.rows().find((r) => r.id.endsWith(":INBOX/12"))).toMatchObject({
     fromName: "dee@outlook.com",
-    thread: "12",
+    thread: "INBOX/12",
     unread: false,
   });
 
@@ -250,13 +280,13 @@ test("Outlook: a source the box no longer has is a failed open", async () => {
   await until(() => all.rows().length === 2 && w.world.imap.includes("sources:11,12"));
 
   const failed = await w.tab.settle(mail.api["mail.open"], {
-    input: { id: all.rows().find((r) => r.id.endsWith(":12"))?.id ?? "", images: false },
+    input: { id: all.rows().find((r) => r.id.endsWith(":INBOX/12"))?.id ?? "", images: false },
   });
   expect(failed.status).toBe("failed");
   expect(w.world.imap).toContain("source:12");
 
   w.world.rawFails = false;
-  const later = await w.open(all.rows().find((r) => r.id.endsWith(":12"))?.id ?? "");
+  const later = await w.open(all.rows().find((r) => r.id.endsWith(":INBOX/12"))?.id ?? "");
   expect(later.kind).toBe("message");
 });
 
@@ -267,17 +297,18 @@ test("search: sender, subject and body words, as prefixes, across accounts; acce
   await until(() => w.world.requests.filter((r) => r.url.includes("format=raw")).length >= 2);
   await w.signIn("microsoft");
   await until(() => all.rows().length === 4 && w.world.imap.includes("sources:11,12"));
+  await new Promise((r) => setTimeout(r, 50));
 
   const found = (q: string) => w.box(`search:${q}`);
   const ann = found("ann");
   await until(() => ann.rows().length === 1);
   expect(ann.rows()[0]?.id).toMatch(/:m1$/);
   const body = found("THERE");
-  await until(() => body.rows().length === 2);
-  expect(pids(body.rows())).toEqual(["m1", "m4"]);
+  await until(() => body.rows().length === 1);
+  expect(pids(body.rows())).toEqual(["m1"]);
   const imap = found("imap tw");
   await until(() => imap.rows().length === 1);
-  expect(imap.rows()[0]?.id).toMatch(/:12$/);
+  expect(imap.rows()[0]?.id).toMatch(/:INBOX\/12$/);
   const folded = found("Ånn");
   await until(() => folded.rows().length === 1);
 
@@ -294,6 +325,56 @@ test("fold: lower case, no accents, and đ as d", async () => {
     "hoa don thang",
     "plain",
   ]);
+});
+
+test("folders: each provider's own, and a folder's mail once it is opened", async () => {
+  const w = await world();
+  const all = w.box("all");
+  const seen = w.accounts();
+  const reader = w.tab.resolve(mail.board.folders.where({}));
+  reader.watch(() => undefined);
+  const folders = () => reader.get().map((f) => `${f.account[0]}:${f.id}:${f.kind}`);
+  await w.signIn("google");
+  await until(() => folders().length === 4);
+  expect(folders()).toEqual(["g:INBOX:inbox", "g:SENT:sent", "g:Label_1:label", "g:Label_2:label"]);
+
+  await until(() => seen.list().length === 1);
+  const gid = seen.list()[0]?.id ?? "";
+  const pull = (box: string) => w.tab.run(mail.api["mail.pull"], { input: { box } });
+  const sent = w.box(`${gid}~SENT`);
+  expect(await pull(`${gid}~SENT`)).toEqual({ kind: "queued" });
+  await until(() => sent.rows().length === 1);
+  expect(sent.rows()[0]?.subject).toBe("Subject m6");
+  expect(await pull(`${gid}~SENT`)).toEqual({ kind: "fresh" });
+  expect(await pull(gid)).toEqual({ kind: "fresh" });
+  expect(await pull("nobody~SENT")).toEqual({ kind: "gone", id: "nobody~SENT" });
+  expect(await pull("search:x")).toEqual({ kind: "gone", id: "search:x" });
+  expect(all.rows().some((r) => r.id.endsWith(":m6"))).toBe(false);
+
+  await w.signIn("microsoft");
+  await until(() => folders().length === 8);
+  expect(folders().filter((f) => f.startsWith("m"))).toEqual([
+    "m:INBOX:inbox",
+    "m:Sent Items:sent",
+    "m:Archive:archive",
+    "m:Projects:label",
+  ]);
+  const mid =
+    w
+      .accounts()
+      .list()
+      .find((a) => a.provider === "microsoft")?.id ?? "";
+  const outSent = w.box(`${mid}~Sent Items`);
+  await pull(`${mid}~Sent Items`);
+  await until(() => outSent.rows().length === 1);
+  const id = outSent.rows()[0]?.id ?? "";
+  expect(id).toBe(`${mid}:Sent Items/31`);
+  expect((await w.open(id)).kind).toBe("message");
+  expect(w.world.imap).toContain("source:31@Sent Items");
+
+  const before = w.world.imap.filter((step) => step === "list@Sent Items").length;
+  await w.tab.run(mail.api["mail.sync"], { input: {} });
+  await until(() => w.world.imap.filter((step) => step === "list@Sent Items").length > before);
 });
 
 test("the root: the app opens at the inbox; a sign-in with no address is refused", async () => {

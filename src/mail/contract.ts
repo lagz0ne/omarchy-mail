@@ -46,7 +46,37 @@ export const messages = data({
   key: (m) => ({ box: m.box, id: m.id }),
 });
 
-export const mailBoard = remoteData({ accounts, messages });
+export const folderKind = z.enum([
+  "inbox",
+  "starred",
+  "important",
+  "sent",
+  "drafts",
+  "spam",
+  "trash",
+  "archive",
+  "label",
+]);
+
+const folderRow = z.object({
+  account: z.string(),
+  id: z.string(),
+  name: z.string(),
+  kind: folderKind,
+});
+
+export type FolderRow = z.infer<typeof folderRow>;
+
+export const folders = data({
+  label: "mail.folders",
+  mode: "keyed",
+  parse: folderRow,
+  key: (f) => ({ account: f.account, id: f.id }),
+});
+
+export const syncing = data({ label: "mail.syncing", initial: { busy: false, at: 0 } });
+
+export const mailBoard = remoteData({ accounts, messages, folders, syncing });
 
 const gone = z.object({ kind: z.literal("gone"), id: z.string() });
 
@@ -85,6 +115,14 @@ export const mailApi = rpc({
   "mail.mark": {
     input: z.object({ id: z.string(), unread: z.boolean() }),
     output: z.discriminatedUnion("kind", [z.object({ kind: z.literal("marked") }), gone]),
+  },
+  "mail.pull": {
+    input: z.object({ box: z.string() }),
+    output: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("fresh") }),
+      z.object({ kind: z.literal("queued") }),
+      gone,
+    ]),
   },
   "mail.sync": {
     input: z.object({}),

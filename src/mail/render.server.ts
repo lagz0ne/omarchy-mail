@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { origin, signer } from "./config.server";
 import type { Attachment } from "./contract";
+import { checkShape } from "./net.server";
 
 const tags = tag<string[]>({
   label: "render.tags",
@@ -83,6 +84,41 @@ const textPage = operation({
   },
 });
 
+const parsedMail = z.object({
+  subject: z.string().optional(),
+  from: z.unknown().optional(),
+  to: z.unknown().optional(),
+  cc: z.unknown().optional(),
+  date: z.string().optional(),
+  html: z.string().optional(),
+  text: z.string().optional(),
+  attachments: z
+    .array(
+      z.object({
+        filename: z.string().nullish(),
+        mimeType: z.string().default("application/octet-stream"),
+        contentId: z.string().nullish(),
+        content: z.union([z.string(), z.instanceof(ArrayBuffer), z.instanceof(Uint8Array)]),
+      }),
+    )
+    .default([]),
+});
+
+export const readMime = operation({
+  label: "render.readMime",
+  input: z.object({ mime: z.instanceof(Uint8Array) }),
+  depends: { checkShape },
+  run: async ({ checkShape }, { input, log, raise }) => {
+    const raw: unknown = await PostalMime.parse(input.mime).catch((error: unknown) => {
+      log.warn("provider.malformed", { source: "mime", issues: [String(error)] });
+      return raise("ProviderMalformed", { source: "mime", issues: [String(error)] });
+    });
+    return parsedMail.parse(
+      await checkShape.run({ input: { source: "mime", value: raw, shape: parsedMail } }),
+    );
+  },
+});
+
 const addr = z.object({ name: z.string().default(""), address: z.string().default("") });
 
 const people = z.array(addr).catch([]);
@@ -90,9 +126,9 @@ const people = z.array(addr).catch([]);
 export const renderMessage = operation({
   label: "render.message",
   input: z.object({ id: z.string(), mime: z.instanceof(Uint8Array), images: z.boolean() }),
-  depends: { origin, proxyLink, textPage, tags, layout, base },
-  run: async ({ origin, proxyLink, textPage, tags, layout, base }, { input }) => {
-    const mail = await PostalMime.parse(input.mime);
+  depends: { origin, proxyLink, textPage, tags, layout, base, readMime },
+  run: async ({ origin, proxyLink, textPage, tags, layout, base, readMime }, { input }) => {
+    const mail = await readMime.run({ input: { mime: input.mime } });
     const at = `${origin}/api/att/${encodeURIComponent(input.id)}`;
     const cids = new Set<string>();
     let remote = 0;
@@ -166,8 +202,9 @@ export const renderMessage = operation({
 export const attachmentOf = operation({
   label: "render.attachment",
   input: z.object({ mime: z.instanceof(Uint8Array), part: z.string() }),
-  run: async (_, { input }) => {
-    const mail = await PostalMime.parse(input.mime);
+  depends: { readMime },
+  run: async ({ readMime }, { input }) => {
+    const mail = await readMime.run({ input: { mime: input.mime } });
     const cid = input.part.startsWith("cid/") ? decodeURIComponent(input.part.slice(4)) : undefined;
     const found =
       cid === undefined
@@ -188,8 +225,9 @@ export const attachmentOf = operation({
 export const textOf = operation({
   label: "render.textOf",
   input: z.object({ mime: z.instanceof(Uint8Array) }),
-  run: async (_, { input }) => {
-    const mail = await PostalMime.parse(input.mime);
+  depends: { readMime },
+  run: async ({ readMime }, { input }) => {
+    const mail = await readMime.run({ input: { mime: input.mime } });
     if (mail.text) return mail.text;
 
     return (mail.html ?? "")

@@ -1,7 +1,7 @@
 import { capsule, tag } from "@tinkered/core";
 
 import { clients, origin, signer, syncEvery } from "./config.server";
-import { prefetchAll, syncAll } from "./sync.server";
+import { syncAll } from "./sync.server";
 
 const firstSync = tag<number>({ label: "mail.firstSync", default: 1_000 });
 
@@ -22,8 +22,7 @@ export const mailServer = capsule({
       const worker = { role: "worker", explain: "Pulls every inbox on a timer" } as const;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const tick = async () => {
-        await run(syncAll, { signal }, worker).catch(() => undefined);
-        await run(prefetchAll, { signal }, worker).catch(() => undefined);
+        await run(syncAll, {}, worker).catch(() => undefined);
         if (!signal.aborted) timer = setTimeout(tick, config.syncEvery);
       };
       signal.addEventListener("abort", () => clearTimeout(timer));

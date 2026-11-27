@@ -1,8 +1,9 @@
 import { exits } from "@tinkered/cli/test";
-import { createScope } from "@tinkered/core";
+import { createScope, operation } from "@tinkered/core";
 import { expect, test } from "vite-plus/test";
+import { z } from "zod";
 
-import { throttle } from "@/mail/throttle.server";
+import { type Job, throttle } from "@/mail/throttle.server";
 
 const boot = async () =>
   createScope({
@@ -80,7 +81,7 @@ test("per second: the fourth start in a second waits for the window", async () =
   await app.close();
 });
 
-test("a pause holds the whole family; a close lets every waiter go", async () => {
+test("a pause holds the whole family; a close cancels every waiter", async () => {
   const app = await boot();
   const limiter = app.resolve(throttle);
   limiter.pause("https://gmail.googleapis.com/x", 150);
@@ -97,8 +98,74 @@ test("a pause holds the whole family; a close lets every waiter go", async () =>
   await new Promise((r) => setTimeout(r, 20));
   expect(second).toBe(false);
   await app.close();
-  await queued;
-  expect(second).toBe(true);
+  await expect(queued).rejects.toThrow();
+  expect(second).toBe(false);
   gate.open();
-  await first;
+  await expect(first).rejects.toThrow();
+});
+
+const done: string[] = [];
+const gates = new Map<string, PromiseWithResolvers<void>>();
+
+const job = operation({
+  label: "test.job",
+  input: z.custom<Job>(),
+  run: async (_, { input }) => {
+    await gates.get(input.key)?.promise;
+    done.push(input.key);
+    return input.key;
+  },
+});
+
+const queue = async () =>
+  createScope({
+    capsules: [
+      exits({ file: process.env.TINKER_EXITS }),
+      throttle({ work: job, rules: { google: { concurrent: 4, perSecond: 50 } } }),
+    ],
+  }).ready;
+
+const until = async (ok: () => boolean) => {
+  const end = Date.now() + 2000;
+  while (!ok()) {
+    if (Date.now() > end) throw new Error("timed out");
+    await new Promise((r) => setTimeout(r, 5));
+  }
+};
+
+test("jobs: one at a time per family, by priority, merged by key, again after a run", async () => {
+  done.length = 0;
+  const app = await queue();
+  const limiter = app.resolve(throttle);
+  gates.set("first", Promise.withResolvers());
+  const put = (key: string, priority: number, family = "google") =>
+    limiter.enqueue({ key, family, priority, task: null });
+
+  expect(put("first", 1)).toBe("queued");
+  expect(put("later", 2)).toBe("queued");
+  expect(put("soon", 0)).toBe("queued");
+  expect(put("soon", 2)).toBe("merged");
+  expect(put("first", 1)).toBe("again");
+  expect(put("other", 5, "microsoft")).toBe("queued");
+  await until(() => done.includes("other"));
+  expect(done).toEqual(["other"]);
+  expect(limiter.size()).toBe(3);
+
+  gates.get("first")?.resolve();
+  await until(() => done.length === 5);
+  expect(done).toEqual(["other", "first", "soon", "first", "later"]);
+  await app.close();
+});
+
+test("jobs wait while their family is paused", async () => {
+  done.length = 0;
+  const app = await queue();
+  const limiter = app.resolve(throttle);
+  limiter.pause("google", 120);
+
+  const t0 = Date.now();
+  limiter.enqueue({ key: "held", family: "google", priority: 0, task: null });
+  await until(() => done.includes("held"));
+  expect(Date.now() - t0).toBeGreaterThanOrEqual(100);
+  await app.close();
 });

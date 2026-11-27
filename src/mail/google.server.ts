@@ -2,9 +2,9 @@ import { operation, tag } from "@tinkered/core";
 import { z } from "zod";
 
 import { clients, origin } from "./config.server";
-import { send, sendJson } from "./net.server";
+import { checkShape, send, sendJson } from "./net.server";
 import { type Pulled, pullInput, refreshed, signedIn } from "./provider.server";
-import type { Meta } from "./store.server";
+import type { Folder, Meta } from "./store.server";
 
 const authorize = tag<string>({
   label: "google.authorize",
@@ -40,6 +40,27 @@ const scopes = tag<string>({
 const firstPull = tag<number>({ label: "google.firstPull", default: 150 });
 
 const parallel = tag<number>({ label: "google.parallel", default: 4 });
+
+const folderPull = tag<number>({ label: "google.folderPull", default: 50 });
+
+const systemLabels = tag<Readonly<Record<string, Folder["kind"]>>>({
+  label: "google.systemLabels",
+  default: {
+    INBOX: "inbox",
+    STARRED: "starred",
+    IMPORTANT: "important",
+    SENT: "sent",
+    DRAFT: "drafts",
+    SPAM: "spam",
+    TRASH: "trash",
+  },
+});
+
+const person = z.object({ email: z.string(), name: z.string().optional() });
+
+const profileShape = z.object({ historyId: z.string() });
+
+const rawShape = z.object({ raw: z.string() });
 
 const tokens = z.object({
   access_token: z.string(),
@@ -88,6 +109,7 @@ export const googleExchange = operation({
     const got = tokens.parse(
       await sendJson.run({
         input: {
+          shape: tokens,
           url: tokenUrl,
           method: "POST",
           form: {
@@ -102,9 +124,9 @@ export const googleExchange = operation({
       }),
     );
     if (!got.refresh_token) return raise("NoRefreshToken", { provider: "google" });
-    const me = z.object({ email: z.string(), name: z.string().optional() }).parse(
+    const me = person.parse(
       await sendJson.run({
-        input: { url: userinfo, token: got.access_token },
+        input: { url: userinfo, token: got.access_token, shape: person },
       }),
     );
     return signedIn.parse({
@@ -126,6 +148,7 @@ export const googleRefresh = operation({
     const got = tokens.parse(
       await sendJson.run({
         input: {
+          shape: tokens,
           url: tokenUrl,
           method: "POST",
           form: {
@@ -169,16 +192,24 @@ export const splitFrom = operation({
 
 const googleMeta = operation({
   label: "google.meta",
-  input: z.object({ access: z.string(), pid: z.string() }),
-  depends: { send, splitFrom, api },
-  run: async ({ send, splitFrom, api }, { input }): Promise<Meta | null> => {
+  input: z.object({ access: z.string(), pid: z.string(), label: z.string() }),
+  depends: { send, splitFrom, api, checkShape },
+  run: async ({ send, splitFrom, api, checkShape }, { input }): Promise<Meta | null> => {
     const url = new URL(`${api}/messages/${input.pid}`);
     url.search = "format=metadata&metadataHeaders=From&metadataHeaders=Subject";
     const res = await send.run({ input: { url: url.href, token: input.access } });
     if (res.status === 404) return null;
 
-    const m = gmailMeta.parse(await res.json());
-    if (!m.labelIds.includes("INBOX")) return null;
+    const m = gmailMeta.parse(
+      await checkShape.run({
+        input: {
+          source: "gmail.meta",
+          value: await res.json().catch(() => null),
+          shape: gmailMeta,
+        },
+      }),
+    );
+    if (!m.labelIds.includes(input.label)) return null;
     const head = new Map(m.payload.headers.map((h) => [h.name.toLowerCase(), h.value]));
     const from = splitFrom.run({ input: head.get("from") ?? "" });
     return {
@@ -198,7 +229,11 @@ const googleMeta = operation({
 
 const googleMetas = operation({
   label: "google.metas",
-  input: z.object({ access: z.string(), pids: z.array(z.string()) }),
+  input: z.object({
+    access: z.string(),
+    pids: z.array(z.string()),
+    label: z.string(),
+  }),
   depends: { googleMeta, parallel },
   run: async ({ googleMeta, parallel }, { input }) => {
     const rows: Meta[] = [];
@@ -206,7 +241,9 @@ const googleMetas = operation({
     for (let at = 0; at < input.pids.length; at += parallel) {
       const batch = input.pids.slice(at, at + parallel);
       const found = await Promise.all(
-        batch.map((pid) => googleMeta.run({ input: { access: input.access, pid } })),
+        batch.map((pid) =>
+          googleMeta.run({ input: { access: input.access, pid, label: input.label } }),
+        ),
       );
       found.forEach((m, i) => (m ? rows.push(m) : removed.push(batch[i] ?? "")));
     }
@@ -227,14 +264,18 @@ const googleFull = operation({
     const token = input.access;
     const profile = z
       .object({ historyId: z.string() })
-      .parse(await sendJson.run({ input: { url: `${api}/profile`, token } }));
+      .parse(await sendJson.run({ input: { url: `${api}/profile`, token, shape: profileShape } }));
     const list = listed.parse(
       await sendJson.run({
-        input: { url: `${api}/messages?labelIds=INBOX&maxResults=${firstPull}`, token },
+        input: {
+          shape: listed,
+          url: `${api}/messages?labelIds=INBOX&maxResults=${firstPull}`,
+          token,
+        },
       }),
     );
     const { rows } = await googleMetas.run({
-      input: { access: token, pids: list.messages.map((m) => m.id) },
+      input: { access: token, pids: list.messages.map((m) => m.id), label: "INBOX" },
     });
     return { kind: "full" as const, rows, removed: [], cursor: profile.historyId };
   },
@@ -256,8 +297,8 @@ const historyPage = z.object({
 const googleDelta = operation({
   label: "google.delta",
   input: z.object({ access: z.string(), cursor: z.string() }),
-  depends: { send, googleMetas, api },
-  run: async ({ send, googleMetas, api }, { input, raise }) => {
+  depends: { send, googleMetas, api, checkShape },
+  run: async ({ send, googleMetas, api, checkShape }, { input, raise }) => {
     const touched = new Set<string>();
     const deleted = new Set<string>();
     let cursor = input.cursor;
@@ -271,7 +312,15 @@ const googleDelta = operation({
       if (res.status === 404) return { kind: "reset" as const };
 
       if (!res.ok) return raise("ProviderFailed", { status: res.status, url: url.href, body: "" });
-      const got = historyPage.parse(await res.json());
+      const got = historyPage.parse(
+        await checkShape.run({
+          input: {
+            source: "gmail.history",
+            value: await res.json().catch(() => null),
+            shape: historyPage,
+          },
+        }),
+      );
       for (const h of got.history) {
         for (const m of h.messages) touched.add(m.id);
         for (const d of h.messagesDeleted) deleted.add(d.message.id);
@@ -280,7 +329,7 @@ const googleDelta = operation({
       page = got.nextPageToken;
     } while (page);
     const pids = [...touched].filter((pid) => !deleted.has(pid));
-    const read = await googleMetas.run({ input: { access: input.access, pids } });
+    const read = await googleMetas.run({ input: { access: input.access, pids, label: "INBOX" } });
     return {
       kind: "delta" as const,
       rows: read.rows,
@@ -305,9 +354,13 @@ export const googleRaw = operation({
   input: z.object({ access: z.string(), pid: z.string() }),
   depends: { sendJson, api },
   run: async ({ sendJson, api }, { input }) => {
-    const got = z.object({ raw: z.string() }).parse(
+    const got = rawShape.parse(
       await sendJson.run({
-        input: { url: `${api}/messages/${input.pid}?format=raw`, token: input.access },
+        input: {
+          url: `${api}/messages/${input.pid}?format=raw`,
+          token: input.access,
+          shape: rawShape,
+        },
       }),
     );
     return Buffer.from(got.raw, "base64url");
@@ -347,5 +400,53 @@ export const googleMark = operation({
         json: change,
       },
     });
+  },
+});
+
+const labels = z.object({
+  labels: z
+    .array(z.object({ id: z.string(), name: z.string(), type: z.string().default("user") }))
+    .default([]),
+});
+
+export const googleFolders = operation({
+  label: "google.folders",
+  input: z.object({ access: z.string() }),
+  depends: { sendJson, api, systemLabels },
+  run: async ({ sendJson, api, systemLabels }, { input }): Promise<Folder[]> => {
+    const got = labels.parse(
+      await sendJson.run({ input: { shape: labels, url: `${api}/labels`, token: input.access } }),
+    );
+    const order = Object.keys(systemLabels);
+    const system = got.labels
+      .filter((l) => l.id in systemLabels)
+      .sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id))
+      .map((l) => ({ id: l.id, name: l.name, kind: systemLabels[l.id] ?? "label" }));
+    const own = got.labels
+      .filter((l) => l.type === "user")
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((l) => ({ id: l.id, name: l.name, kind: "label" as const }));
+    return [...system, ...own];
+  },
+});
+
+export const googleFolderPull = operation({
+  label: "google.folderPull",
+  input: z.object({ access: z.string(), folder: z.string() }),
+  depends: { sendJson, googleMetas, api, folderPull },
+  run: async ({ sendJson, googleMetas, api, folderPull }, { input }) => {
+    const url = new URL(`${api}/messages`);
+    url.search = new URLSearchParams({
+      labelIds: input.folder,
+      maxResults: String(folderPull),
+      includeSpamTrash: "true",
+    }).toString();
+    const list = listed.parse(
+      await sendJson.run({ input: { shape: listed, url: url.href, token: input.access } }),
+    );
+    const { rows } = await googleMetas.run({
+      input: { access: input.access, pids: list.messages.map((m) => m.id), label: input.folder },
+    });
+    return rows;
   },
 });

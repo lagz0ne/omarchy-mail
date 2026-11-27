@@ -12,6 +12,7 @@ import { backoff, net, type Http } from "@/mail/net.server";
 import { mailLoads, mailOps } from "@/mail/ops.server";
 import { mailRoutes } from "@/mail/routes.server";
 import { store } from "@/mail/store.server";
+import { runJob } from "@/mail/sync.server";
 import { throttle } from "@/mail/throttle.server";
 
 export const origin = "http://127.0.0.1:6245";
@@ -86,6 +87,8 @@ export type World = {
   rawFails: boolean;
   markFails: boolean;
   busy: number;
+  broken: "none" | "garbage" | "shape" | "cut" | "down" | "stall";
+  logs: { message: string; attributes: Record<string, unknown> }[];
 };
 
 type Fake = [
@@ -124,6 +127,7 @@ const gmailMessage = (url: URL) => {
   const labels: Record<string, string[] | null> = {
     m1: ["INBOX", "UNREAD", "STARRED"],
     m3: ["CATEGORY_UPDATES"],
+    m6: ["SENT"],
     m5: null,
   };
   const found = id in labels ? labels[id] : ["INBOX"];
@@ -150,6 +154,22 @@ const microsoftTokens = (world: World, url: URL, body: string) => {
     id_token: world.noIdentity ? idToken({ name: "Bo" }) : idToken({ email: "bo@outlook.com" }),
   });
 };
+
+const imapFolders = [
+  { path: "INBOX", name: "INBOX", specialUse: "\\Inbox", flags: new Set() },
+  { path: "Sent Items", name: "Sent Items", specialUse: "\\Sent", flags: new Set() },
+  { path: "Projects", name: "Projects", flags: new Set() },
+  { path: "Archive", name: "Archive", specialUse: "\\Archive", flags: new Set() },
+  { path: "[Root]", name: "[Root]", flags: new Set(["\\Noselect"]) },
+];
+
+const sentRows = [
+  {
+    uid: 31,
+    envelope: { subject: "Sent one", from: [{ name: "Bo", address: "bo@outlook.com" }] },
+    flags: new Set(["\\Seen"]),
+  },
+];
 
 const imapRows = [
   {
@@ -181,7 +201,27 @@ const fakes: Fake[] = [
   [at("gmail.googleapis.com", `${gmail}/profile`), () => json({ historyId: "100" })],
   [
     at("gmail.googleapis.com", `${gmail}/messages`),
-    () => json({ messages: [{ id: "m1" }, { id: "m2" }, { id: "m3" }] }),
+    (_w, url) =>
+      json({
+        messages:
+          url.searchParams.get("labelIds") === "SENT"
+            ? [{ id: "m6" }]
+            : [{ id: "m1" }, { id: "m2" }, { id: "m3" }],
+      }),
+  ],
+  [
+    at("gmail.googleapis.com", `${gmail}/labels`),
+    () =>
+      json({
+        labels: [
+          { id: "CATEGORY_UPDATES", name: "CATEGORY_UPDATES", type: "system" },
+          { id: "SENT", name: "SENT", type: "system" },
+          { id: "Label_2", name: "Travel", type: "user" },
+          { id: "INBOX", name: "INBOX", type: "system" },
+          { id: "Label_1", name: "Receipts", type: "user" },
+          { id: "UNREAD", name: "UNREAD", type: "system" },
+        ],
+      }),
   ],
   [at("gmail.googleapis.com", `${gmail}/history`), historyPage],
   [at("gmail.googleapis.com", /\/modify$/), (world) => json({}, world.markFails ? 500 : 200)],
@@ -211,6 +251,8 @@ export async function boot(
     rawFails: false,
     markFails: false,
     busy: 0,
+    broken: "none",
+    logs: [],
   };
   const kept = new Map<string, string>();
   const http: Http = async (request) => {
@@ -218,6 +260,27 @@ export async function boot(
     const url = new URL(request.url);
     const body = await request.text();
     const found = fakes.find(([fits]) => fits(url, request.method));
+    const breaks = {
+      none: () => undefined,
+      garbage: () => new Response("<html>oops", { status: 200 }),
+      shape: () => json({ unexpected: true }),
+      cut: () =>
+        new Response(
+          new ReadableStream({
+            start: (c) => {
+              c.enqueue(new TextEncoder().encode('{"historyId": "1'));
+              c.error(new Error("connection reset"));
+            },
+          }),
+        ),
+      down: () => Promise.reject(new TypeError("fetch failed: ECONNREFUSED")),
+      stall: () =>
+        new Promise<Response>((_, reject) =>
+          request.signal.addEventListener("abort", () => reject(request.signal.reason)),
+        ),
+    };
+    const broken = url.host === "gmail.googleapis.com" ? breaks[world.broken]() : undefined;
+    if (broken) return broken;
     if (url.host === "gmail.googleapis.com" && world.busy > 0) {
       world.busy--;
       return new Response("{}", {
@@ -237,22 +300,28 @@ export async function boot(
     if (world.imapDown || login.user !== "bo@outlook.com") throw new Error("AUTHENTICATE failed");
     world.imap.push(`login:${login.host}`);
     let usable = true;
+
+    const where = (box: string) => (box === "INBOX" ? "" : `@${box}`);
+    const rowsIn = (box: string) =>
+      box === "INBOX" ? imapRows : box === "Sent Items" ? sentRows : [];
     return {
       usable: () => usable,
-      list: async (limit) => {
-        world.imap.push("list");
+      folders: async () => imapFolders,
+      list: async (box, limit) => {
+        world.imap.push(`list${where(box)}`);
         if (world.imapDown) throw new Error("connection lost");
-        return { validity: "7", rows: imapRows.slice(0, limit) };
+        return { validity: "7", rows: rowsIn(box).slice(0, limit) };
       },
-      sources: async (uids) => {
-        world.imap.push(uids.length === 1 ? `source:${uids[0]}` : `sources:${uids.join(",")}`);
+      sources: async (box, uids) => {
+        const what = uids.length === 1 ? `source:${uids[0]}` : `sources:${uids.join(",")}`;
+        world.imap.push(`${what}${where(box)}`);
         const known = world.rawFails
           ? []
-          : uids.filter((uid) => imapRows.some((r) => String(r.uid) === uid));
-        return known.map((uid) => ({ uid, mime: new TextEncoder().encode(plain) }));
+          : uids.filter((uid) => rowsIn(box).some((r) => String(r.uid) === uid));
+        return known.map((uid) => ({ uid: Number(uid), source: new TextEncoder().encode(plain) }));
       },
-      flag: async (uid, seen) => {
-        world.imap.push(`flag:${uid}:${seen}`);
+      flag: async (box, uid, seen) => {
+        world.imap.push(`flag:${uid}:${seen}${where(box)}`);
       },
       close: async () => {
         usable = false;
@@ -260,6 +329,7 @@ export async function boot(
       },
     };
   };
+
   const stop = new AbortController();
   const clients =
     options.clients === "none"
@@ -268,10 +338,14 @@ export async function boot(
   const server = await createScope({
     clock: options.clock,
     tags: [backoff(1)],
+    observe: {
+      log: (entry) =>
+        void world.logs.push({ message: entry.message, attributes: entry.attributes }),
+    },
     capsules: [
       exits({ file: process.env.TINKER_EXITS }),
       store({ file: ":memory:" }),
-      throttle(),
+      throttle({ work: runJob, slow: 150, timeout: 300 }),
       net({ fetch: http }),
       keyring({ store: secrets }),
       outlookImap({ open }),

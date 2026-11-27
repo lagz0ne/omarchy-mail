@@ -11,10 +11,11 @@ import {
   flagMessage,
   listAccounts,
   loadAccounts,
+  loadFolders,
   loadMessages,
   readRaw,
 } from "./store.server";
-import { markBy, rawBy, syncAll } from "./sync.server";
+import { markBy, pullBox, rawBy, syncAll } from "./sync.server";
 
 export const splitId = operation({
   label: "mail.splitId",
@@ -154,7 +155,12 @@ export const mailOps = {
   "mail.open": openMessage,
   "mail.mark": markMessage,
   "mail.sync": syncNow,
+  "mail.pull": pullBox,
   "account.remove": removeAccount,
 } as const;
 
-export const mailLoads = { accounts: loadAccounts, messages: loadMessages } as const;
+export const mailLoads = {
+  accounts: loadAccounts,
+  messages: loadMessages,
+  folders: loadFolders,
+} as const;

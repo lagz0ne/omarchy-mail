@@ -2,12 +2,35 @@ import { operation, tag } from "@tinkered/core";
 import { z } from "zod";
 
 import { accessToken } from "./auth.server";
-import { mailBoard, provider } from "./contract";
-import { googleMark, googlePull, googleRaw, googleRaws } from "./google.server";
-import { microsoftMark, microsoftPull, microsoftRaw, microsoftRaws } from "./microsoft.server";
+import { mailBoard, provider, syncing } from "./contract";
+import {
+  googleFolderPull,
+  googleFolders,
+  googleMark,
+  googlePull,
+  googleRaw,
+  googleRaws,
+} from "./google.server";
+import {
+  microsoftFolders,
+  microsoftMark,
+  microsoftPull,
+  microsoftRaw,
+  microsoftRaws,
+} from "./microsoft.server";
 import type { Pulled } from "./provider.server";
 import { keepSource } from "./source.server";
-import { applySync, listAccounts, missingSources, noteSync } from "./store.server";
+import {
+  applySync,
+  boxOf,
+  listAccounts,
+  missingSources,
+  noteSync,
+  saveFolders,
+  touchBox,
+  watchedBoxes,
+} from "./store.server";
+import { type Job, throttle } from "./throttle.server";
 
 const pullBy = operation({
   label: "sync.pullBy",
@@ -21,7 +44,7 @@ const pullBy = operation({
   run: async ({ googlePull, microsoftPull }, { input }): Promise<Pulled> =>
     input.provider === "google"
       ? googlePull.run({ input: { access: input.access, cursor: input.cursor } })
-      : microsoftPull.run({ input: { access: input.access, user: input.user } }),
+      : microsoftPull.run({ input: { access: input.access, user: input.user, folder: "INBOX" } }),
 });
 
 export const rawBy = operation({
@@ -59,11 +82,19 @@ const keepPull = operation({
     const { account, pulled } = input;
     switch (pulled.kind) {
       case "full":
-        applySync.run({ input: { account, full: true, rows: pulled.rows, removed: [] } });
+        applySync.run({
+          input: { account, folder: "INBOX", full: true, rows: pulled.rows, removed: [] },
+        });
         return pulled.cursor;
       case "delta":
         applySync.run({
-          input: { account, full: false, rows: pulled.rows, removed: pulled.removed },
+          input: {
+            account,
+            folder: "INBOX",
+            full: false,
+            rows: pulled.rows,
+            removed: pulled.removed,
+          },
         });
         return pulled.cursor;
       case "reset":
@@ -72,44 +103,71 @@ const keepPull = operation({
   },
 });
 
+const foldersBy = operation({
+  label: "sync.foldersBy",
+  input: z.object({ provider, access: z.string(), user: z.string() }),
+  depends: { googleFolders, microsoftFolders },
+  run: async ({ googleFolders, microsoftFolders }, { input }) =>
+    input.provider === "google"
+      ? googleFolders.run({ input: { access: input.access } })
+      : microsoftFolders.run({ input: { access: input.access, user: input.user } }),
+});
+
+const folderPullBy = operation({
+  label: "sync.folderPullBy",
+  input: z.object({ provider, access: z.string(), user: z.string(), folder: z.string() }),
+  depends: { googleFolderPull, microsoftPull },
+  run: async ({ googleFolderPull, microsoftPull }, { input }) =>
+    input.provider === "google"
+      ? googleFolderPull.run({ input: { access: input.access, folder: input.folder } })
+      : (await microsoftPull.run({ input })).rows,
+});
+
 export const syncAccount = operation({
   label: "sync.account",
   input: z.object({ id: z.string(), provider, user: z.string(), cursor: z.string().nullable() }),
-  depends: { accessToken, pullBy, keepPull },
-  run: async ({ accessToken, pullBy, keepPull }, { input }) => {
+  depends: { accessToken, pullBy, keepPull, foldersBy, saveFolders },
+  run: async ({ accessToken, pullBy, keepPull, foldersBy, saveFolders }, { input }) => {
     const access = await accessToken.run({
       input: { account: input.id, provider: input.provider },
     });
     const { provider, user } = input;
     let pulled = await pullBy.run({ input: { provider, access, user, cursor: input.cursor } });
+
     if (pulled.kind === "reset") {
       pulled = await pullBy.run({ input: { provider, access, user, cursor: null } });
     }
+    const folders = await foldersBy.run({ input: { provider, access, user } });
+    saveFolders.run({ input: { account: input.id, folders } });
     return keepPull.run({ input: { account: input.id, pulled } });
   },
 });
 
-export const syncAll = operation({
-  label: "sync.all",
-  depends: { listAccounts, syncAccount, noteSync, invalidate: mailBoard.invalidate },
-  run: async ({ listAccounts, syncAccount, noteSync, invalidate }, { clock }) => {
-    const all = listAccounts.run();
-    for (const a of all) {
-      const done = await syncAccount.settle({
-        input: { id: a.id, provider: a.provider, user: a.email, cursor: a.cursor },
-      });
-      const failure = Object(Object(done).error);
-      const error =
-        done.status === "success"
-          ? ""
-          : [failure.kind ?? "failed", failure.payload?.status].filter(Boolean).join(" ");
-      const cursor = done.status === "success" ? done.value : null;
-      noteSync.run({ input: { id: a.id, cursor, at: clock.currentTimeMillis(), error } });
-    }
-    await invalidate.run({ input: { accounts: {}, messages: {} } });
-    return { accounts: all.length };
+export const syncBox = operation({
+  label: "sync.box",
+  input: z.object({ account: z.string(), folder: z.string() }),
+  depends: { listAccounts, accessToken, folderPullBy, applySync, touchBox },
+  run: async (
+    { listAccounts, accessToken, folderPullBy, applySync, touchBox },
+    { input, clock },
+  ) => {
+    const owner = listAccounts.run().find((a) => a.id === input.account);
+    if (!owner) return 0;
+
+    const { provider, email: user } = owner;
+    const access = await accessToken.run({ input: { account: owner.id, provider } });
+    const rows = await folderPullBy.run({
+      input: { provider, access, user, folder: input.folder },
+    });
+    applySync.run({ input: { ...input, full: true, rows, removed: [] } });
+    touchBox.run({ input: { ...input, at: clock.currentTimeMillis(), what: "synced" } });
+    return rows.length;
   },
 });
+
+const watchFor = tag<number>({ label: "sync.watchFor", default: 10 * 60_000 });
+
+const fresh = tag<number>({ label: "sync.fresh", default: 60_000 });
 
 const ahead = tag<number>({ label: "sync.ahead", default: 50 });
 
@@ -144,18 +202,148 @@ const prefetchAccount = operation({
   },
 });
 
-export const prefetchAll = operation({
-  label: "sync.prefetch",
-  depends: { listAccounts, prefetchAccount, invalidate: mailBoard.invalidate },
-  run: async ({ listAccounts, prefetchAccount, invalidate }) => {
-    let fetched = 0;
-    for (const a of listAccounts.run()) {
-      const done = await prefetchAccount.settle({
-        input: { id: a.id, provider: a.provider, user: a.email },
+const priorities = tag<Readonly<Record<"view" | "inbox" | "ahead", number>>>({
+  label: "sync.priorities",
+  default: { view: 0, inbox: 1, ahead: 2 },
+});
+
+const task = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("inbox"), account: z.string() }),
+  z.object({ kind: z.literal("box"), account: z.string(), folder: z.string() }),
+  z.object({ kind: z.literal("ahead"), account: z.string() }),
+]);
+
+export const queueTask = operation({
+  label: "sync.queue",
+  input: z.object({ task, priority: z.enum(["view", "inbox", "ahead"]) }),
+  depends: { listAccounts, throttle, priorities },
+  run: ({ listAccounts, throttle, priorities }, { input }) => {
+    const owner = listAccounts.run().find((a) => a.id === input.task.account);
+    if (!owner) return "gone" as const;
+
+    const where = input.task.kind === "box" ? `:${input.task.folder}` : "";
+    return throttle.enqueue({
+      key: `${input.task.kind}:${owner.id}${where}`,
+      family: owner.provider,
+      priority: priorities[input.priority],
+      task: input.task,
+    });
+  },
+});
+
+const syncInbox = operation({
+  label: "sync.inbox",
+  input: z.object({ account: z.string() }),
+  depends: {
+    listAccounts,
+    syncAccount,
+    noteSync,
+    queueTask,
+    invalidate: mailBoard.invalidate,
+  },
+  run: async (deps, { input, clock }) => {
+    const owner = deps.listAccounts.run().find((a) => a.id === input.account);
+    if (!owner) return "gone";
+
+    const done = await deps.syncAccount.settle({
+      input: { id: owner.id, provider: owner.provider, user: owner.email, cursor: owner.cursor },
+    });
+    const failure = Object(Object(done).error);
+    const error =
+      done.status === "success"
+        ? ""
+        : [failure.kind ?? "failed", failure.payload?.status].filter(Boolean).join(" ");
+    const cursor = done.status === "success" ? done.value : null;
+    deps.noteSync.run({ input: { id: owner.id, cursor, at: clock.currentTimeMillis(), error } });
+    await deps.invalidate.run({ input: { accounts: {}, messages: {}, folders: {} } });
+    if (!error) {
+      deps.queueTask.run({
+        input: { task: { kind: "ahead", account: owner.id }, priority: "ahead" },
       });
-      if (done.status === "success") fetched += done.value;
     }
+    return error;
+  },
+});
+
+const fetchAhead = operation({
+  label: "sync.ahead",
+  input: z.object({ account: z.string() }),
+  depends: { listAccounts, prefetchAccount, invalidate: mailBoard.invalidate },
+  run: async ({ listAccounts, prefetchAccount, invalidate }, { input }) => {
+    const owner = listAccounts.run().find((a) => a.id === input.account);
+    if (!owner) return 0;
+
+    const fetched = await prefetchAccount.run({
+      input: { id: owner.id, provider: owner.provider, user: owner.email },
+    });
     if (fetched > 0) await invalidate.run({ input: { messages: {} } });
-    return { fetched };
+    return fetched;
+  },
+});
+
+export const runJob = operation({
+  label: "sync.job",
+  input: z.custom<Job>(),
+  depends: {
+    syncInbox,
+    syncBox,
+    fetchAhead,
+    throttle,
+    status: syncing.controller,
+    invalidate: mailBoard.invalidate,
+  },
+  run: async (deps, { input, clock }) => {
+    deps.status.set({ busy: true, at: deps.status.get().at });
+    try {
+      const job = task.parse(input.task);
+      switch (job.kind) {
+        case "inbox":
+          return await deps.syncInbox.run({ input: job });
+        case "box":
+          await deps.syncBox.run({ input: job });
+          await deps.invalidate.run({ input: { messages: {} } });
+          return "";
+        case "ahead":
+          return await deps.fetchAhead.run({ input: job });
+      }
+    } finally {
+      deps.status.set({ busy: deps.throttle.size() > 1, at: clock.currentTimeMillis() });
+    }
+  },
+});
+
+export const syncAll = operation({
+  label: "sync.all",
+  depends: { listAccounts, watchedBoxes, queueTask, watchFor },
+  run: ({ listAccounts, watchedBoxes, queueTask, watchFor }, { clock }) => {
+    const all = listAccounts.run();
+    for (const a of all) {
+      queueTask.run({ input: { task: { kind: "inbox", account: a.id }, priority: "inbox" } });
+    }
+    const since = clock.currentTimeMillis() - watchFor;
+    for (const box of watchedBoxes.run({ input: { since } })) {
+      queueTask.run({ input: { task: { kind: "box", ...box }, priority: "inbox" } });
+    }
+    return { accounts: all.length };
+  },
+});
+
+export const pullBox = operation({
+  label: "mail.pull.do",
+  input: z.object({ box: z.string() }),
+  depends: { boxOf, listAccounts, touchBox, queueTask, fresh },
+  run: (deps, { input, clock }) => {
+    const { account, folder } = deps.boxOf.run({ input: input.box });
+    const known = deps.listAccounts.run().some((a) => a.id === account);
+    if (!known || !account || input.box.startsWith("search:")) {
+      return { kind: "gone" as const, id: input.box };
+    }
+
+    const now = clock.currentTimeMillis();
+    const box = deps.touchBox.run({ input: { account, folder, at: now, what: "viewed" } });
+    if (folder === "INBOX" || now - box.synced_at < deps.fresh) return { kind: "fresh" as const };
+
+    deps.queueTask.run({ input: { task: { kind: "box", account, folder }, priority: "view" } });
+    return { kind: "queued" as const };
   },
 });

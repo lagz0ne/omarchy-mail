@@ -3,9 +3,9 @@ import { z } from "zod";
 
 import { clients, origin } from "./config.server";
 import { outlookImap } from "./imap.server";
-import { sendJson } from "./net.server";
+import { checkShape, sendJson } from "./net.server";
 import { refreshed, signedIn } from "./provider.server";
-import type { Meta } from "./store.server";
+import type { Folder, Meta } from "./store.server";
 import { throttle } from "./throttle.server";
 
 const login = tag<string>({
@@ -26,6 +26,28 @@ const scopes = tag<string>({
 });
 
 const newest = tag<number>({ label: "microsoft.newest", default: 150 });
+
+const imapFolders = z.array(
+  z
+    .object({
+      path: z.string(),
+      name: z.string().default(""),
+      specialUse: z.string().optional(),
+      flags: z.instanceof(Set).default(new Set()),
+    })
+    .transform((f) => ({
+      path: f.path,
+      name: f.name || f.path,
+      use: f.specialUse ?? "",
+      selectable: !f.flags.has("\\Noselect"),
+    })),
+);
+
+const fetchedSources = z.array(
+  z
+    .object({ uid: z.number(), source: z.instanceof(Uint8Array).optional() })
+    .transform((m) => ({ uid: String(m.uid), mime: m.source ? new Uint8Array(m.source) : null })),
+);
 
 const fetched = z.object({
   uid: z.number(),
@@ -114,6 +136,7 @@ export const microsoftExchange = operation({
     const got = tokens.parse(
       await sendJson.run({
         input: {
+          shape: tokens,
           url: `${login}/token`,
           method: "POST",
           form: {
@@ -149,6 +172,7 @@ export const microsoftRefresh = operation({
     const got = tokens.parse(
       await sendJson.run({
         input: {
+          shape: tokens,
           url: `${login}/token`,
           method: "POST",
           form: {
@@ -168,20 +192,74 @@ export const microsoftRefresh = operation({
   },
 });
 
+const specialUses = tag<Readonly<Record<string, Folder["kind"]>>>({
+  label: "microsoft.specialUses",
+  default: {
+    "\\Inbox": "inbox",
+    "\\Flagged": "starred",
+    "\\Sent": "sent",
+    "\\Drafts": "drafts",
+    "\\Junk": "spam",
+    "\\Trash": "trash",
+    "\\Archive": "archive",
+  },
+});
+
+export const placeOf = operation({
+  label: "microsoft.place",
+  input: z.string(),
+  run: (_, { input }) => {
+    const at = input.lastIndexOf("/");
+    return { box: input.slice(0, at), uid: input.slice(at + 1) };
+  },
+});
+
+export const microsoftFolders = operation({
+  label: "microsoft.folders",
+  input: z.object({ access: z.string(), user: z.string() }),
+  depends: { imap: outlookImap, throttle, specialUses, checkShape },
+  run: async ({ imap, throttle, specialUses, checkShape }, { input }): Promise<Folder[]> => {
+    const raw = await throttle.run("microsoft", (signal) => imap.folders({ ...input, signal }));
+    const found = imapFolders.parse(
+      await checkShape.run({ input: { source: "imap.folders", value: raw, shape: imapFolders } }),
+    );
+    const order = ["inbox", "starred", "sent", "drafts", "archive", "spam", "trash", "label"];
+    return found
+      .filter((f) => f.selectable)
+      .map((f) => ({
+        id: f.path.toUpperCase() === "INBOX" ? "INBOX" : f.path,
+        name: f.path.toUpperCase() === "INBOX" ? "Inbox" : f.name,
+        kind:
+          f.path.toUpperCase() === "INBOX" ? ("inbox" as const) : (specialUses[f.use] ?? "label"),
+      }))
+      .sort(
+        (a, b) => order.indexOf(a.kind) - order.indexOf(b.kind) || a.name.localeCompare(b.name),
+      );
+  },
+});
+
 export const microsoftPull = operation({
   label: "microsoft.pull",
-  input: z.object({ access: z.string(), user: z.string() }),
-  depends: { imap: outlookImap, throttle, newest },
-  run: async ({ imap, throttle, newest }, { input }) => {
-    const box = await throttle.run("microsoft", () =>
-      imap.list({ user: input.user, access: input.access, limit: newest }),
+  input: z.object({ access: z.string(), user: z.string(), folder: z.string() }),
+  depends: { imap: outlookImap, throttle, newest, checkShape },
+  run: async ({ imap, throttle, newest, checkShape }, { input }) => {
+    const box = await throttle.run("microsoft", (signal) =>
+      imap.list({
+        user: input.user,
+        access: input.access,
+        box: input.folder,
+        limit: newest,
+        signal,
+      }),
     );
-    const rows: Meta[] = z
-      .array(fetched)
-      .parse(box.rows)
+    const listed = z.array(fetched);
+    const rows: Meta[] = listed
+      .parse(
+        await checkShape.run({ input: { source: "imap.list", value: box.rows, shape: listed } }),
+      )
       .map((m) => ({
-        pid: String(m.uid),
-        thread: m.envelope.messageId || String(m.uid),
+        pid: `${input.folder}/${m.uid}`,
+        thread: m.envelope.messageId || `${input.folder}/${m.uid}`,
         fromName: m.envelope.from.name || m.envelope.from.address,
         fromAddr: m.envelope.from.address,
         subject: m.envelope.subject,
@@ -198,11 +276,16 @@ export const microsoftPull = operation({
 export const microsoftRaw = operation({
   label: "microsoft.raw",
   input: z.object({ access: z.string(), user: z.string(), pid: z.string() }),
-  depends: { imap: outlookImap, throttle },
-  run: async ({ imap, throttle }, { input, raise }) => {
-    const mime = await throttle.run("microsoft", () =>
-      imap.source({ user: input.user, access: input.access, uid: input.pid }),
+  depends: { imap: outlookImap, throttle, placeOf, checkShape },
+  run: async ({ imap, throttle, placeOf, checkShape }, { input, raise }) => {
+    const { box, uid } = placeOf.run({ input: input.pid });
+    const raw = await throttle.run("microsoft", (signal) =>
+      imap.sources({ user: input.user, access: input.access, box, uids: [uid], signal }),
     );
+    const [found] = fetchedSources.parse(
+      await checkShape.run({ input: { source: "imap.source", value: raw, shape: fetchedSources } }),
+    );
+    const mime = found?.mime;
     if (!mime) return raise("ProviderFailed", { status: 404, url: `imap:${input.pid}`, body: "" });
 
     return mime;
@@ -212,22 +295,37 @@ export const microsoftRaw = operation({
 export const microsoftRaws = operation({
   label: "microsoft.raws",
   input: z.object({ access: z.string(), user: z.string(), pids: z.array(z.string()) }),
-  depends: { imap: outlookImap, throttle },
-  run: async ({ imap, throttle }, { input }) => {
-    const found = await throttle.run("microsoft", () =>
-      imap.sources({ user: input.user, access: input.access, uids: input.pids }),
+  depends: { imap: outlookImap, throttle, placeOf, checkShape },
+  run: async ({ imap, throttle, placeOf, checkShape }, { input }) => {
+    const byBox = Map.groupBy(
+      input.pids.map((pid) => placeOf.run({ input: pid })),
+      (p) => p.box,
     );
-    return found.map((m) => ({ pid: m.uid, mime: m.mime }));
+    const found: { pid: string; mime: Uint8Array<ArrayBuffer> }[] = [];
+    for (const [box, places] of byBox) {
+      const uids = places.map((p) => p.uid);
+      const raw = await throttle.run("microsoft", (signal) =>
+        imap.sources({ user: input.user, access: input.access, box, uids, signal }),
+      );
+      const got = fetchedSources.parse(
+        await checkShape.run({
+          input: { source: "imap.sources", value: raw, shape: fetchedSources },
+        }),
+      );
+      for (const m of got) if (m.mime) found.push({ pid: `${box}/${m.uid}`, mime: m.mime });
+    }
+    return found;
   },
 });
 
 export const microsoftMark = operation({
   label: "microsoft.mark",
   input: z.object({ access: z.string(), user: z.string(), pid: z.string(), unread: z.boolean() }),
-  depends: { imap: outlookImap, throttle },
-  run: async ({ imap, throttle }, { input }) => {
-    await throttle.run("microsoft", () =>
-      imap.flag({ user: input.user, access: input.access, uid: input.pid, seen: !input.unread }),
+  depends: { imap: outlookImap, throttle, placeOf },
+  run: async ({ imap, throttle, placeOf }, { input }) => {
+    const { box, uid } = placeOf.run({ input: input.pid });
+    await throttle.run("microsoft", (signal) =>
+      imap.flag({ user: input.user, access: input.access, box, uid, seen: !input.unread, signal }),
     );
   },
 });

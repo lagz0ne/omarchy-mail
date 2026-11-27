@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { capsule, operation, tag } from "@tinkered/core";
 import { z } from "zod";
 
-import { type Account, provider, type Row } from "./contract";
+import { type Account, folderKind, type FolderRow, provider, type Row } from "./contract";
 
 const schema = tag<string>({
   label: "store.schema",
@@ -25,14 +25,41 @@ create table if not exists raws (
 create virtual table if not exists search using fts5(
   account unindexed, pid unindexed, head, body, tokenize = "unicode61 remove_diacritics 2"
 );
+create table if not exists folders (
+  account text not null, id text not null, name text not null, kind text not null,
+  position integer not null, primary key (account, id)
+);
+create table if not exists boxes (
+  account text not null, folder text not null, synced_at integer not null default 0,
+  viewed_at integer not null default 0, primary key (account, folder)
+);
 `,
+});
+
+const migrations = tag<readonly string[]>({
+  label: "store.migrations",
+  default: [
+    `alter table messages rename to messages_v0;
+     create table messages (
+       account text not null, folder text not null, pid text not null, thread text not null,
+       from_name text not null, from_addr text not null, subject text not null,
+       snippet text not null, date integer not null, unread integer not null,
+       starred integer not null, attach integer not null,
+       primary key (account, folder, pid)
+     );
+     insert into messages select account, 'INBOX', pid, thread, from_name, from_addr, subject,
+       snippet, date, unread, starred, attach from messages_v0;
+     drop table messages_v0;
+     drop index if exists messages_date;
+     create index messages_date on messages (date desc);`,
+  ],
 });
 
 const file = tag<string>({ label: "store.file" });
 
 export const store = capsule({
   label: "store",
-  config: { file: file.required, schema },
+  config: { file: file.required, schema, migrations },
   hooks: {
     async start({ config, next, signal }) {
       await next();
@@ -40,6 +67,13 @@ export const store = capsule({
 
       db.run("pragma journal_mode = wal");
       db.exec(config.schema);
+      const { user_version: done } = z
+        .object({ user_version: z.number() })
+        .parse(db.query("pragma user_version").get());
+      db.transaction(() => {
+        config.migrations.slice(done).forEach((step) => db.exec(step));
+        db.exec(`pragma user_version = ${config.migrations.length}`);
+      })();
       signal.addEventListener("abort", () => db.close());
       return db;
     },
@@ -75,6 +109,7 @@ const accountRow = z.object({
 
 const messageRow = z.object({
   account: z.string(),
+  folder: z.string(),
   pid: z.string(),
   thread: z.string(),
   from_name: z.string(),
@@ -145,6 +180,8 @@ export const dropAccount = operation({
     db.query("delete from messages where account = $id").run({ $id: input.id });
     db.query("delete from raws where account = $id").run({ $id: input.id });
     db.query("delete from search where account = $id").run({ $id: input.id });
+    db.query("delete from folders where account = $id").run({ $id: input.id });
+    db.query("delete from boxes where account = $id").run({ $id: input.id });
     return { kind: "removed" as const };
   },
 });
@@ -170,6 +207,7 @@ export const applySync = operation({
   label: "store.apply",
   input: z.object({
     account: z.string(),
+    folder: z.string(),
     full: z.boolean(),
     rows: z.array(meta),
     removed: z.array(z.string()),
@@ -181,20 +219,22 @@ export const applySync = operation({
     });
     const head = db.query("update search set head = $head where account = $account and pid = $pid");
     const fresh = db.query("insert into search values ($account, $pid, $head, '')");
-    const unsearch = db.query("delete from search where account = $account and pid = $pid");
+    const box = { $account: input.account, $folder: input.folder };
 
     const put = db.query(
-      `insert or replace into messages values
-       ($account, $pid, $thread, $fromName, $fromAddr, $subject, $snippet, $date, $unread, $starred, $attach)`,
+      `insert or replace into messages values ($account, $folder, $pid, $thread, $fromName,
+       $fromAddr, $subject, $snippet, $date, $unread, $starred, $attach)`,
     );
-    const drop = db.query("delete from messages where account = $account and pid = $pid");
+    const drop = db.query(
+      "delete from messages where account = $account and folder = $folder and pid = $pid",
+    );
     db.transaction(() => {
       if (input.full) {
-        db.query("delete from messages where account = $account").run({ $account: input.account });
+        db.query("delete from messages where account = $account and folder = $folder").run(box);
       }
       for (const m of input.rows) {
         put.run({
-          $account: input.account,
+          ...box,
           $pid: m.pid,
           $thread: m.thread,
           $fromName: m.fromName,
@@ -211,10 +251,7 @@ export const applySync = operation({
         const key = { $account: input.account, $pid: m.pid, $head: heads[i] ?? "" };
         if (head.run(key).changes === 0) fresh.run(key);
       });
-      for (const pid of input.removed) {
-        drop.run({ $account: input.account, $pid: pid });
-        unsearch.run({ $account: input.account, $pid: pid });
-      }
+      for (const pid of input.removed) drop.run({ ...box, $pid: pid });
       db.query(
         `delete from search where account = $account
          and pid not in (select pid from messages where account = $account)`,
@@ -256,9 +293,22 @@ const searchMessages = operation({
     return db
       .query(
         `select m.* from search s join messages m on m.account = s.account and m.pid = s.pid
-         where search match $match order by m.date desc limit $limit`,
+         where search match $match group by m.account, m.pid order by m.date desc limit $limit`,
       )
       .all({ $match: words.map((w) => `"${w}"*`).join(" "), $limit: input.limit });
+  },
+});
+
+export const boxOf = operation({
+  label: "store.box",
+  input: z.string(),
+  run: (_, { input }) => {
+    const at = input.indexOf("~");
+    if (input === "all") return { account: null, folder: "INBOX" };
+
+    return at < 0
+      ? { account: input, folder: "INBOX" }
+      : { account: input.slice(0, at), folder: input.slice(at + 1) };
   },
 });
 
@@ -269,18 +319,110 @@ export const loadMessages = operation({
     order: z.enum(["-date"]).optional(),
     limit: z.number().int().min(1).max(500).optional(),
   }),
-  depends: { db: store, searchMessages, rowsOf },
-  run: ({ db, searchMessages, rowsOf }, { input }): Row[] => {
+  depends: { db: store, searchMessages, rowsOf, boxOf },
+  run: ({ db, searchMessages, rowsOf, boxOf }, { input }): Row[] => {
     const limit = input.limit ?? 100;
+    const { account, folder } = boxOf.run({ input: input.box });
     const found = input.box.startsWith("search:")
       ? searchMessages.run({ input: { q: input.box.slice(7), limit } })
       : db
           .query(
-            "select * from messages where ($all or account = $box) order by date desc limit $limit",
+            `select * from messages where folder = $folder and ($all or account = $account)
+             order by date desc limit $limit`,
           )
-          .all({ $all: Number(input.box === "all"), $box: input.box, $limit: limit });
+          .all({
+            $all: Number(account === null),
+            $account: account,
+            $folder: folder,
+            $limit: limit,
+          });
     return rowsOf.run({ input: { box: input.box, found: z.array(messageRow).parse(found) } });
   },
+});
+
+export const folder = z.object({ id: z.string(), name: z.string(), kind: folderKind });
+
+export type Folder = z.infer<typeof folder>;
+
+export const saveFolders = operation({
+  label: "store.folders.save",
+  input: z.object({ account: z.string(), folders: z.array(folder) }),
+  depends: { db: store },
+  run: ({ db }, { input }) => {
+    const put = db.query("insert into folders values ($account, $id, $name, $kind, $position)");
+    db.transaction(() => {
+      db.query("delete from folders where account = $account").run({ $account: input.account });
+      input.folders.forEach((f, position) =>
+        put.run({
+          $account: input.account,
+          $id: f.id,
+          $name: f.name,
+          $kind: f.kind,
+          $position: position,
+        }),
+      );
+    })();
+  },
+});
+
+export const loadFolders = operation({
+  label: "store.folders.load",
+  input: z.object({ account: z.string().optional() }),
+  depends: { db: store },
+  run: ({ db }, { input }): FolderRow[] =>
+    z
+      .array(z.object({ account: z.string(), id: z.string(), name: z.string(), kind: folderKind }))
+      .parse(
+        db
+          .query(
+            `select account, id, name, kind from folders where ($all or account = $account)
+             order by account, position`,
+          )
+          .all({ $all: Number(input.account === undefined), $account: input.account ?? "" }),
+      ),
+});
+
+export const touchBox = operation({
+  label: "store.box.touch",
+  input: z.object({
+    account: z.string(),
+    folder: z.string(),
+    at: z.number(),
+    what: z.enum(["viewed", "synced"]),
+  }),
+  depends: { db: store },
+  run: ({ db }, { input }) => {
+    const column = input.what === "viewed" ? "viewed_at" : "synced_at";
+    db.query(
+      `insert into boxes (account, folder, ${column}) values ($account, $folder, $at)
+       on conflict (account, folder) do update set ${column} = $at`,
+    ).run({ $account: input.account, $folder: input.folder, $at: input.at });
+    return z
+      .object({ synced_at: z.number(), viewed_at: z.number() })
+      .parse(
+        db
+          .query(
+            "select synced_at, viewed_at from boxes where account = $account and folder = $folder",
+          )
+          .get({ $account: input.account, $folder: input.folder }),
+      );
+  },
+});
+
+export const watchedBoxes = operation({
+  label: "store.boxes.watched",
+  input: z.object({ since: z.number() }),
+  depends: { db: store },
+  run: ({ db }, { input }) =>
+    z
+      .array(z.object({ account: z.string(), folder: z.string() }))
+      .parse(
+        db
+          .query(
+            "select account, folder from boxes where viewed_at >= $since and folder != 'INBOX'",
+          )
+          .all({ $since: input.since }),
+      ),
 });
 
 export const indexBody = operation({
@@ -309,7 +451,7 @@ export const missingSources = operation({
           .query(
             `select pid from messages m where account = $account and not exists
              (select 1 from raws r where r.account = m.account and r.pid = m.pid)
-             order by unread desc, date desc limit $limit`,
+             group by pid order by max(unread) desc, max(date) desc limit $limit`,
           )
           .all({ $account: input.account, $limit: input.limit }),
       )
