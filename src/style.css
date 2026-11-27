@@ -33,15 +33,18 @@
   --shadow:
     0 1px 2px color-mix(in oklab, var(--bg-3) 40%, transparent),
     0 12px 32px -12px color-mix(in oklab, var(--bg-3) 70%, transparent);
-  --r-xl: 18px;
-  --r-lg: 14px;
-  --r-md: 10px;
-  --r-sm: 7px;
+  --radius: 14px;
+  --corner: round;
+  --r-xl: var(--radius);
+  --r-lg: calc(var(--radius) * 0.8);
+  --r-md: calc(var(--radius) * 0.62);
+  --r-sm: calc(var(--radius) * 0.45);
   --gap: 8px;
 }
 
 * {
   box-sizing: border-box;
+  corner-shape: var(--corner);
 }
 
 html,
@@ -321,7 +324,7 @@ h2 {
   content: counter(mailbox);
   margin-left: auto;
   padding: 1px 5px;
-  border-radius: 5px;
+  border-radius: var(--r-sm);
   background: var(--surface-2);
   color: var(--text-3);
   font-size: 9px;
@@ -401,7 +404,7 @@ h2 {
   place-items: center;
   width: 30px;
   height: 30px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: linear-gradient(
     135deg,
     color-mix(in oklab, var(--blue) 55%, var(--surface-2)),
@@ -743,7 +746,7 @@ h2 {
 .who .initial {
   width: 22px;
   height: 22px;
-  border-radius: 7px;
+  border-radius: var(--r-md);
   font-size: 10px;
 }
 
@@ -929,7 +932,7 @@ h2 {
   flex: none;
   width: 42px;
   height: 26px;
-  border-radius: 7px;
+  border-radius: var(--r-md);
   box-shadow: 0 0 0 1px var(--soft-line);
 }
 

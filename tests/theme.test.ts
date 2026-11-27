@@ -8,7 +8,8 @@ import { memory } from "@tinkered/core/testing";
 import { afterAll, expect, test } from "vite-plus/test";
 
 import { theme } from "@/theme";
-import { loadSheet, themeLoads, themeServer } from "@/theme/theme.server";
+import { themeCss } from "@/theme/contract";
+import { loadSheet, shapeOf, themeLoads, themeServer } from "@/theme/theme.server";
 
 const folder = mkdtempSync(join(tmpdir(), "theme-"));
 afterAll(() => rmSync(folder, { recursive: true, force: true }));
@@ -105,4 +106,34 @@ test("every installed theme is listed, and each has its sheet", async () => {
 
   await tab.close();
   await server.close();
+});
+
+test("corners follow the theme's Hyprland rounding, then looknfeel, then square", async () => {
+  const dirs = join(folder, "shapes");
+  mkdirSync(join(dirs, "round"), { recursive: true });
+  mkdirSync(join(dirs, "plain"), { recursive: true });
+  writeFileSync(join(dirs, "round", "colors.toml"), 'background = "#101315"\n');
+  writeFileSync(
+    join(dirs, "round", "hyprland.lua"),
+    "hl.config({\n  decoration = {\n    rounding = 14,\n    rounding_power = 4.5,\n  },\n})\n",
+  );
+  writeFileSync(join(dirs, "plain", "colors.toml"), 'background = "#2e3440"\n');
+  const own = join(folder, "looknfeel.lua");
+  writeFileSync(own, "-- rounding = 99,\nhl.config({ decoration = { rounding = 8 } })\n");
+  const file = join(dirs, "round", "colors.toml");
+  const app = await createScope({
+    capsules: [
+      exits({ file: process.env.TINKER_EXITS }),
+      themeServer({ file, every: 1_000, dirs: [dirs], looknfeel: own }),
+      theme.board({ serve: true, load: themeLoads }),
+    ],
+  }).ready;
+
+  const css = (name: string) =>
+    app.run(loadSheet, { input: { name } }).then((found) => found[0]?.css ?? "");
+  expect(await css("round")).toContain("--radius:14px;--corner:squircle");
+  expect(await css("plain")).toContain("--radius:8px;--corner:round");
+  expect(app.resolve(themeCss)).toContain("--radius:14px;--corner:squircle");
+  expect(app.run(shapeOf, { input: ["-- rounding = 3", ""] })).toEqual({ radius: 0, power: 2 });
+  await app.close();
 });

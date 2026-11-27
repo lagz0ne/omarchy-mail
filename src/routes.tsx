@@ -5,7 +5,7 @@ import { z } from "zod";
 import { mail } from "@/mail";
 import { Accounts } from "@/mail/accounts";
 import { Box, Idle, Rail } from "@/mail/inbox";
-import { Reader } from "@/mail/reader";
+import { OpenFailed, Reader } from "@/mail/reader";
 import { ThemeStyle } from "@/theme/theme-style";
 import { PaneSizes } from "@/ui/panes";
 
@@ -49,6 +49,7 @@ const message = createRoute({
       input: { id: params.id, images: deps.images },
       signal: abortController.signal,
     }),
+  errorComponent: ({ error }) => <OpenFailed error={error} />,
   component: () => (
     <Reader
       out={message.useLoaderData()}

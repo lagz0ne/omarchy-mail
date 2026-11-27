@@ -57,15 +57,45 @@ export const colorsOf = operation({
   },
 });
 
+const looknfeel = tag<string>({ label: "theme.looknfeel", default: "" });
+
+const rounding = tag<{ readonly radius: number; readonly power: number }>({
+  label: "theme.rounding",
+  default: { radius: 0, power: 2 },
+});
+
+const setting = z.coerce.number().min(0).max(64);
+
+export const shapeOf = operation({
+  label: "theme.shape",
+  input: z.array(z.string()),
+  depends: { rounding },
+  run: ({ rounding }, { input }) => {
+    const plain = input.map((text) => text.replaceAll(/--.*$/gm, ""));
+    const [radius, power] = [/\brounding\s*=\s*([\d.]+)/, /\brounding_power\s*=\s*([\d.]+)/].map(
+      (pattern) =>
+        plain
+          .map((text) => setting.safeParse(pattern.exec(text)?.[1]))
+          .find((value) => value.success)?.data,
+    );
+    return { radius: radius ?? rounding.radius, power: power ?? rounding.power };
+  },
+});
+
 export const sheetOf = operation({
   label: "theme.sheet",
-  input: z.string(),
+  input: z.object({
+    colors: z.string(),
+    shape: z.object({ radius: z.number(), power: z.number() }),
+  }),
   depends: { colorsOf },
   run: ({ colorsOf }, { input }) => {
-    const c = colorsOf.run({ input });
+    const c = colorsOf.run({ input: input.colors });
     if (c === null) return null;
 
-    return `:root{color-scheme:${c.mode};--bg:${c.background};--bg-2:${c.dark_background};--bg-3:${c.darker_background};--bg-up:${c.lighter_background};--fg:${c.foreground};--fg-2:${c.bright_foreground};--dim:${c.dark_foreground};--muted:${c.muted};--accent:${c.accent};--sel:${c.selection};--warm:${c.bright_red};--line:color-mix(in srgb,${c.foreground} 14%,transparent);--red:${c.red};--yellow:${c.yellow};--green:${c.green};--cyan:${c.cyan};--blue:${c.blue};--magenta:${c.magenta}}`;
+    const corner = input.shape.power > 2 ? "squircle" : "round";
+
+    return `:root{color-scheme:${c.mode};--bg:${c.background};--bg-2:${c.dark_background};--bg-3:${c.darker_background};--bg-up:${c.lighter_background};--fg:${c.foreground};--fg-2:${c.bright_foreground};--dim:${c.dark_foreground};--muted:${c.muted};--accent:${c.accent};--sel:${c.selection};--warm:${c.bright_red};--line:color-mix(in srgb,${c.foreground} 14%,transparent);--red:${c.red};--yellow:${c.yellow};--green:${c.green};--cyan:${c.cyan};--blue:${c.blue};--magenta:${c.magenta};--radius:${input.shape.radius}px;--corner:${corner}}`;
   },
 });
 
@@ -80,10 +110,13 @@ const fileOf = operation({
   depends: { themeDirs },
   run: async ({ themeDirs }, { input }) => {
     for (const dir of themeDirs) {
-      const text = await Bun.file(`${dir}/${input.name}/colors.toml`)
+      const colors = await Bun.file(`${dir}/${input.name}/colors.toml`)
         .text()
         .catch(() => null);
-      if (text !== null) return text;
+      const hypr = await Bun.file(`${dir}/${input.name}/hyprland.lua`)
+        .text()
+        .catch(() => "");
+      if (colors !== null) return { colors, hypr };
     }
     return null;
   },
@@ -101,8 +134,8 @@ export const loadThemes = operation({
     }
     const out: Swatch[] = [];
     for (const name of [...names].sort((a, b) => a.localeCompare(b))) {
-      const text = /^[\w.-]+$/.test(name) ? await fileOf.run({ input: { name } }) : null;
-      const c = text === null ? null : colorsOf.run({ input: text });
+      const found = /^[\w.-]+$/.test(name) ? await fileOf.run({ input: { name } }) : null;
+      const c = found === null ? null : colorsOf.run({ input: found.colors });
       const title = name.replaceAll(/[-_]/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
       if (c) {
         out.push({
@@ -123,10 +156,14 @@ export const loadThemes = operation({
 export const loadSheet = operation({
   label: "theme.sheet.load",
   input: z.object({ name: z.string() }),
-  depends: { fileOf, sheetOf },
-  run: async ({ fileOf, sheetOf }, { input }) => {
-    const text = /^[\w.-]+$/.test(input.name) ? await fileOf.run({ input }) : null;
-    const css = text === null ? null : sheetOf.run({ input: text });
+  depends: { fileOf, sheetOf, shapeOf, looknfeel },
+  run: async ({ fileOf, sheetOf, shapeOf, looknfeel }, { input }) => {
+    const found = /^[\w.-]+$/.test(input.name) ? await fileOf.run({ input }) : null;
+    const own = await Bun.file(looknfeel)
+      .text()
+      .catch(() => "");
+    const shape = shapeOf.run({ input: found ? [found.hypr, own] : [] });
+    const css = found === null ? null : sheetOf.run({ input: { colors: found.colors, shape } });
     return css === null ? [] : [{ name: input.name, css }];
   },
 });
@@ -135,12 +172,16 @@ export const themeLoads = { themes: loadThemes, sheets: loadSheet } as const;
 
 export const refreshTheme = operation({
   label: "theme.refresh",
-  depends: { file: colorsFile, css: themeCss.atScope.controller, sheetOf },
-  run: async ({ file, css, sheetOf }) => {
-    const text = await Bun.file(file)
-      .text()
-      .catch(() => "");
-    const sheet = sheetOf.run({ input: text });
+  depends: { file: colorsFile, css: themeCss.atScope.controller, sheetOf, shapeOf, looknfeel },
+  run: async ({ file, css, sheetOf, shapeOf, looknfeel }) => {
+    const [colors = "", hypr = "", own = ""] = await Promise.all(
+      [file, file.replace(/colors\.toml$/, "hyprland.lua"), looknfeel].map((path) =>
+        Bun.file(path)
+          .text()
+          .catch(() => ""),
+      ),
+    );
+    const sheet = sheetOf.run({ input: { colors, shape: shapeOf.run({ input: [hypr, own] }) } });
     if (sheet !== null && sheet !== css.get()) css.set(sheet);
   },
 });
@@ -149,7 +190,7 @@ const quiet = namespace({ observe: false });
 
 export const themeServer = capsule({
   label: "theme.server",
-  config: { file: colorsFile.required, every, dirs: themeDirs },
+  config: { file: colorsFile.required, every, dirs: themeDirs, looknfeel, rounding },
   hooks: {
     async start({ config, next, run, signal }) {
       await next();

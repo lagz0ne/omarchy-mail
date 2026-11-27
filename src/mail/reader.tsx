@@ -313,3 +313,16 @@ function Message({ message, box, images }: { message: Opened; box: string; image
     </section>
   );
 }
+
+export function OpenFailed({ error }: { error: unknown }) {
+  const fault = mailApi.fault.is(error) ? error.fault : "failed";
+
+  return (
+    <section className="reader idle" aria-label="Message">
+      <small className="label warn">Could not open · {fault}</small>
+      <p className="quiet flat">
+        The mail could not be fetched from its provider. It will be tried again when you open it.
+      </p>
+    </section>
+  );
+}

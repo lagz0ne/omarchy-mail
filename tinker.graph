@@ -110,9 +110,10 @@ sync.rawsBy exits{value} reads{} writes{} calls{google.raws,microsoft.raws}
 theme.colors exits{value} reads{} writes{} calls{theme.toml}
 theme.fileOf exits{value} reads{} writes{} calls{}
 theme.list.load exits{value} reads{} writes{} calls{theme.colors,theme.fileOf}
-theme.refresh exits{value} reads{?} writes{?} calls{theme.sheet}
+theme.refresh exits{value} reads{?} writes{?} calls{theme.shape,theme.sheet}
+theme.shape exits{value} reads{} writes{} calls{}
 theme.sheet exits{value} reads{} writes{} calls{theme.colors}
-theme.sheet.load exits{value} reads{} writes{} calls{theme.fileOf,theme.sheet}
+theme.sheet.load exits{value} reads{} writes{} calls{theme.fileOf,theme.shape,theme.sheet}
 theme.toml exits{value} reads{} writes{} calls{}
 ui.chooseTheme exits{value} reads{?} writes{?} calls{}
 ui.saveLayout exits{value} reads{?} writes{?} calls{}

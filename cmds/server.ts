@@ -62,6 +62,7 @@ const mailEnv = z
     dataDir: e.MAIL_HOME ?? join(e.XDG_DATA_HOME, "omarchy-mail"),
     colors: e.THEME_FILE ?? join(e.XDG_STATE_HOME, "omarchy/current/theme/colors.toml"),
     themeDirs: [join(e.HOME, ".config/omarchy/themes"), "/usr/share/omarchy/themes"],
+    looknfeel: join(e.HOME, ".config/hypr/looknfeel.lua"),
     clients: {
       google:
         e.GOOGLE_CLIENT_ID && e.GOOGLE_CLIENT_SECRET
@@ -138,7 +139,7 @@ export default defineMain(async ({ env, args, signal, stdout, stderr, exit }) =>
       }),
       mail.board({ serve: true, load: mailLoads }),
       mail.api({ implement: mailOps }),
-      themeServer({ file: own.colors, dirs: own.themeDirs }),
+      themeServer({ file: own.colors, dirs: own.themeDirs, looknfeel: own.looknfeel }),
       theme.board({ serve: true, load: themeLoads }),
       socket,
       table,
