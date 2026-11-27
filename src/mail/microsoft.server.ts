@@ -2,6 +2,7 @@ import { operation, tag } from "@tinkered/core";
 import { z } from "zod";
 
 import { clients, origin } from "./config.server";
+import { mailAction } from "./contract";
 import { outlookImap } from "./imap.server";
 import { checkShape, sendJson } from "./net.server";
 import { refreshed, signedIn } from "./provider.server";
@@ -325,7 +326,45 @@ export const microsoftMark = operation({
   run: async ({ imap, throttle, placeOf }, { input }) => {
     const { box, uid } = placeOf.run({ input: input.pid });
     await throttle.run("microsoft", (signal) =>
-      imap.flag({ user: input.user, access: input.access, box, uid, seen: !input.unread, signal }),
+      imap.flag({
+        user: input.user,
+        access: input.access,
+        box,
+        uid,
+        flag: "\\Seen",
+        on: !input.unread,
+        signal,
+      }),
     );
+  },
+});
+
+export const microsoftAct = operation({
+  label: "microsoft.act",
+  input: z.object({
+    access: z.string(),
+    user: z.string(),
+    pid: z.string(),
+    action: mailAction,
+    to: z.string().optional(),
+    places: z.record(z.string(), z.string()),
+  }),
+  depends: { imap: outlookImap, throttle, placeOf },
+  run: async ({ imap, throttle, placeOf }, { input }) => {
+    const { box, uid } = placeOf.run({ input: input.pid });
+    const login = { user: input.user, access: input.access };
+    if (input.action === "star" || input.action === "unstar") {
+      const on = input.action === "star";
+      await throttle.run("microsoft", (signal) =>
+        imap.flag({ ...login, box, uid, flag: "\\Flagged", on, signal }),
+      );
+      return "done" as const;
+    }
+
+    const to = input.action === "move" ? input.to : input.places[input.action];
+    if (!to || to === box) return "unsupported" as const;
+
+    await throttle.run("microsoft", (signal) => imap.move({ ...login, box, uid, to, signal }));
+    return "done" as const;
   },
 });

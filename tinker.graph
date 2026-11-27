@@ -5,6 +5,7 @@ auth.finish exits{signed,unknown} reads{?} writes{?} calls{google.exchange,micro
 auth.forget exits{value} reads{?} writes{?} calls{}
 auth.refreshBy exits{value} reads{} writes{} calls{google.refresh,microsoft.refresh}
 auth.token exits{value} reads{?} writes{?} calls{auth.refreshBy}
+google.act exits{value} reads{} writes{} calls{net.json}
 google.authUrl exits{value} reads{} writes{} calls{google.client}
 google.client exits{value} reads{} writes{} calls{}
 google.delta exits{delta,reset} reads{} writes{} calls{google.metas,net.send,net.shape}
@@ -20,6 +21,7 @@ google.raw exits{value} reads{} writes{} calls{net.json}
 google.raws exits{value} reads{} writes{} calls{google.raw}
 google.refresh exits{value} reads{} writes{} calls{google.client,net.json}
 image.trust.do exits{trusted,untrusted} reads{} writes{} calls{?,store.trust}
+mail.act.do exits{done,gone,unsupported} reads{} writes{} calls{?,auth.token,mail.owner,store.act,store.box,store.places,sync.actBy}
 mail.keepSource exits{value} reads{} writes{} calls{render.textOf,store.body.index,store.raw.keep}
 mail.mark.do exits{gone,marked} reads{} writes{} calls{mail.owner,mail.setUnread}
 mail.open.do exits{gone,message} reads{} writes{} calls{mail.owner,mail.setUnread,mail.source,render.message,store.trusted.is}
@@ -30,6 +32,7 @@ mail.source exits{value} reads{} writes{} calls{auth.token,mail.keepSource,store
 mail.splitFrom exits{value} reads{} writes{} calls{}
 mail.splitId exits{value} reads{} writes{} calls{}
 mail.sync.do exits{value} reads{} writes{} calls{sync.all}
+microsoft.act exits{value} reads{} writes{} calls{microsoft.place}
 microsoft.authUrl exits{value} reads{} writes{} calls{microsoft.client}
 microsoft.client exits{value} reads{} writes{} calls{}
 microsoft.exchange exits{value} reads{} writes{} calls{microsoft.client,microsoft.who,net.json}
@@ -66,6 +69,7 @@ store.account.save exits{value} reads{} writes{} calls{}
 store.account.synced exits{value} reads{} writes{} calls{}
 store.accounts exits{value} reads{} writes{} calls{}
 store.accounts.load exits{value} reads{} writes{} calls{store.accounts}
+store.act exits{value} reads{} writes{} calls{}
 store.apply exits{value} reads{} writes{} calls{store.fold}
 store.body.index exits{value} reads{} writes{} calls{store.fold}
 store.box exits{value} reads{} writes{} calls{}
@@ -77,6 +81,7 @@ store.folders.save exits{value} reads{} writes{} calls{}
 store.message.find exits{value} reads{} writes{} calls{}
 store.message.flag exits{value} reads{} writes{} calls{}
 store.messages.load exits{value} reads{} writes{} calls{store.box,store.rows,store.search}
+store.places exits{value} reads{} writes{} calls{}
 store.raw.keep exits{value} reads{} writes{} calls{}
 store.raw.read exits{value} reads{} writes{} calls{}
 store.raws.missing exits{value} reads{} writes{} calls{}
@@ -86,6 +91,7 @@ store.trust exits{trusted,untrusted} reads{} writes{} calls{}
 store.trusted.is exits{value} reads{} writes{} calls{}
 store.trusted.load exits{value} reads{} writes{} calls{}
 sync.account exits{value} reads{} writes{} calls{auth.token,store.folders.save,sync.foldersBy,sync.keep,sync.pullBy}
+sync.actBy exits{value} reads{} writes{} calls{google.act,microsoft.act}
 sync.ahead exits{value} reads{} writes{} calls{?,store.accounts,sync.prefetch.account}
 sync.all exits{value} reads{} writes{} calls{store.accounts,store.boxes.watched,sync.queue}
 sync.box exits{value} reads{} writes{} calls{auth.token,store.accounts,store.apply,store.box.touch,sync.folderPullBy}

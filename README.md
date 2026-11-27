@@ -18,16 +18,16 @@ Then fill `~/.config/omarchy-mail/env` (the file says where each id comes from) 
 
 ## Use
 
-| Keys | |
-|---|---|
+| Keys                   |                                     |
+| ---------------------- | ----------------------------------- |
 | `Ctrl`/`Alt` + `1`–`9` | open the Nth mailbox in the sidebar |
-| `j` / `k` | next / previous mail |
-| `gg` / `G` | first / last mail |
-| `u` | mark unread |
-| `i` | load this mail's images once |
-| `Esc` | back to the list |
-| `/` | search |
-| `Ctrl` + `\\` | fold the sidebar |
+| `j` / `k`              | next / previous mail                |
+| `gg` / `G`             | first / last mail                   |
+| `u`                    | mark unread                         |
+| `i`                    | load this mail's images once        |
+| `Esc`                  | back to the list                    |
+| `/`                    | search                              |
+| `Ctrl` + `\\`          | fold the sidebar                    |
 
 - Accounts → Appearance: any installed Omarchy theme, or follow the desktop.
 - The shield in a mail trusts its sender's domain: its images load by themselves (still through

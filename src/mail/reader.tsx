@@ -1,9 +1,27 @@
-import { Link, useRouter } from "@tanstack/react-router";
-import { useRun } from "@tinkered/react";
+import { Link, useNavigate, useRouter } from "@tanstack/react-router";
+import { useData, useRun } from "@tinkered/react";
+import type { ReactNode } from "react";
 
-import { BackIcon, ClipIcon, ImageIcon, ShieldIcon, UnreadIcon } from "@/ui/icons";
+import {
+  ArchiveIcon,
+  BackIcon,
+  ClipIcon,
+  ImageIcon,
+  ShieldIcon,
+  SpamIcon,
+  StarIcon,
+  TrashIcon,
+  UnreadIcon,
+} from "@/ui/icons";
 
-import { type Address, mailApi, type Opened } from "./contract";
+import {
+  type ActAnswer,
+  type Address,
+  type MailAction,
+  mailApi,
+  mailBoard,
+  type Opened,
+} from "./contract";
 import { When } from "./inbox";
 
 type OpenAnswer = Opened | { kind: "gone"; id: string };
@@ -94,67 +112,196 @@ function Trust({ message }: { message: Opened }) {
   );
 }
 
-function Message({ message, box, images }: { message: Opened; box: string; images: boolean }) {
+function ActButton({
+  id,
+  box,
+  action,
+  label,
+  keyHint,
+  on,
+  children,
+}: {
+  id: string;
+  box: string;
+  action: MailAction;
+  label: string;
+  keyHint: string;
+  on?: boolean;
+  children: ReactNode;
+}) {
+  const act = useRun(mailApi["mail.act"]);
+  const navigate = useNavigate();
+  const router = useRouter();
+  const stays = action === "star" || action === "unstar";
+
+  return (
+    <>
+      <button
+        type="button"
+        className={`icon-key${on === undefined ? "" : " star"}${on ? " on" : ""}`}
+        title={`${label} (${keyHint})`}
+        aria-label={label}
+        aria-pressed={on}
+        data-act={stays ? "star" : action}
+        disabled={act.isPending}
+        onClick={() =>
+          void act.runAsync({ input: { id, box, action } }).then((out) => {
+            if (out.kind !== "done") return undefined;
+            return stays ? router.invalidate() : navigate({ to: "/box/$box", params: { box } });
+          })
+        }
+      >
+        {children}
+      </button>
+      <Unsupported out={act.data} />
+    </>
+  );
+}
+
+function MoveTo({ id, box }: { id: string; box: string }) {
+  const act = useRun(mailApi["mail.act"]);
+  const navigate = useNavigate();
+  const account = id.slice(0, id.indexOf(":"));
+  const folders = useData(mailBoard.folders.where({ account }));
+  const here = box.includes("~") ? box.slice(box.indexOf("~") + 1) : "INBOX";
+
+  return (
+    <select
+      className="move"
+      aria-label="Move to folder"
+      title="Move to folder"
+      value=""
+      disabled={act.isPending}
+      onChange={(event) => {
+        const to = event.target.value;
+        if (!to) return;
+
+        void act
+          .runAsync({ input: { id, box, action: "move", to } })
+          .then((out) =>
+            out.kind === "done" ? navigate({ to: "/box/$box", params: { box } }) : undefined,
+          );
+      }}
+    >
+      <option value="">Move…</option>
+      {folders
+        .filter((f) => f.id !== here)
+        .map((f) => (
+          <option key={f.id} value={f.id}>
+            {f.kind === "label" ? f.name : f.kind[0]?.toUpperCase() + f.kind.slice(1)}
+          </option>
+        ))}
+    </select>
+  );
+}
+
+function Tools({ message, box }: { message: Opened; box: string }) {
   const mark = useRun(mailApi["mail.mark"]);
   const id = message.id;
 
   return (
+    <div className="tools" role="toolbar" aria-label="Mail actions">
+      <ActButton
+        id={id}
+        box={box}
+        action={message.starred ? "unstar" : "star"}
+        label={message.starred ? "Unstar" : "Star"}
+        keyHint="s"
+        on={message.starred}
+      >
+        <StarIcon />
+      </ActButton>
+      <button
+        type="button"
+        className="icon-key"
+        title="Mark unread (u)"
+        aria-label="Mark unread"
+        onClick={() => mark.run({ input: { id, unread: true } })}
+      >
+        <UnreadIcon />
+      </button>
+      <span className="sep" />
+      <ActButton id={id} box={box} action="archive" label="Archive" keyHint="e">
+        <ArchiveIcon />
+      </ActButton>
+      <ActButton id={id} box={box} action="trash" label="Delete" keyHint="#">
+        <TrashIcon />
+      </ActButton>
+      <ActButton id={id} box={box} action="spam" label="Report spam" keyHint="!">
+        <SpamIcon />
+      </ActButton>
+      <MoveTo id={id} box={box} />
+    </div>
+  );
+}
+
+function Unsupported({ out }: { out: ActAnswer | undefined }) {
+  switch (out?.kind) {
+    case undefined:
+    case "done":
+      return null;
+    case "unsupported":
+      return <small className="label warn">No {out.action} folder here</small>;
+    case "gone":
+      return <small className="label warn">Gone</small>;
+  }
+}
+
+function Message({ message, box, images }: { message: Opened; box: string; images: boolean }) {
+  const id = message.id;
+  const sender = message.from.name || message.from.address;
+
+  return (
     <section className="reader" aria-label="Message">
       <header className="reader-head">
-        <Link
-          to="/box/$box"
-          params={{ box }}
-          className="back icon-key"
-          title="Back (Esc)"
-          aria-label="Back to the list"
-        >
-          <BackIcon />
-        </Link>
-        <small className="label">
-          <span title={message.from.address}>{message.from.name || message.from.address}</span> ·{" "}
-          <When at={message.date} />
-        </small>
-        <h2>{message.subject || "(no subject)"}</h2>
-        <p className="meta">
-          <span className="label">To</span> <People list={message.to} />
-          {message.cc.length > 0 && (
-            <>
-              {"  "}
-              <span className="label">Cc</span> <People list={message.cc} />
-            </>
-          )}
-        </p>
-        <div className="actions">
-          <button
-            type="button"
-            className="icon-key"
-            title="Mark unread"
-            aria-label="Mark unread"
-            onClick={() => mark.run({ input: { id, unread: true } })}
+        <h2 title={message.subject}>
+          <Link
+            to="/box/$box"
+            params={{ box }}
+            className="back icon-key"
+            title="Back (Esc)"
+            aria-label="Back to the list"
           >
-            <UnreadIcon />
-          </button>
-          <ImageActions message={message} box={box} images={images} />
+            <BackIcon />
+          </Link>
+          {message.subject || "(no subject)"}
+        </h2>
+        <Tools message={message} box={box} />
+        <div className="who">
+          <span className="initial">{sender.slice(0, 1).toUpperCase()}</span>
+          <b title={message.from.address}>{sender}</b>
+          <span className="to">
+            to <People list={message.to} />
+            {message.cc.length > 0 && (
+              <>
+                , cc <People list={message.cc} />
+              </>
+            )}
+          </span>
+          <When at={message.date} />
         </div>
-        {message.attachments.length > 0 && (
-          <ul className="files">
-            {message.attachments.map((a) => (
-              <li key={a.part}>
-                <a
-                  rel="external"
-                  href={`/api/att/${encodeURIComponent(id)}/${a.part}`}
-                  target="_blank"
-                >
-                  <ClipIcon />
-                  {a.name}{" "}
-                  <small className="label">
-                    <Size bytes={a.size} />
-                  </small>
-                </a>
-              </li>
-            ))}
-          </ul>
-        )}
+        <div className="extras">
+          <ImageActions message={message} box={box} images={images} />
+          {message.attachments.length > 0 && (
+            <ul className="files">
+              {message.attachments.map((a) => (
+                <li key={a.part}>
+                  <a
+                    rel="external"
+                    href={`/api/att/${encodeURIComponent(id)}/${a.part}`}
+                    target="_blank"
+                  >
+                    <ClipIcon />
+                    {a.name}
+                    <small className="label">
+                      <Size bytes={a.size} />
+                    </small>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </header>
       <iframe
         className="body"

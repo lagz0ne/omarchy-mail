@@ -2,7 +2,7 @@ import { makeTestClock } from "@tinkered/core/testing";
 import { afterEach, expect, test } from "vite-plus/test";
 
 import { mail } from "@/mail";
-import type { Account, Opened, Row } from "@/mail/contract";
+import type { Account, MailAction, Opened, Row } from "@/mail/contract";
 import { announce } from "@/mail/notify.server";
 import { proxyLink } from "@/mail/render.server";
 import { foldText } from "@/mail/store.server";
@@ -428,6 +428,76 @@ test("trusted senders: their images load by themselves, until the trust is taken
   const after = await w.open(id);
   if (after.kind !== "message") throw new Error("not opened");
   expect(after.srcdoc).toContain('data-blocked="1"');
+});
+
+test("mail actions on Gmail: labels change at Google, and the boxes follow", async () => {
+  const w = await world();
+  const all = w.box("all");
+  await w.signIn("google");
+  await until(() => all.rows().length === 2);
+  const gid = all.rows()[0]?.account ?? "";
+  const id = (pid: string) =>
+    all.rows().find((r) => r.id.endsWith(`:${pid}`))?.id ?? `${gid}:${pid}`;
+  const act = (target: string, action: MailAction, box = "all", to?: string) =>
+    w.tab.run(mail.api["mail.act"], { input: { id: target, box, action, to } });
+  const sent = (path: string) =>
+    w.world.requests.filter((r) => r.url.endsWith(path)).map((r) => r.method);
+
+  const m1 = id("m1");
+  const m2 = id("m2");
+  expect(await act(m1, "star")).toEqual({ kind: "done", action: "star" });
+  await until(() => all.rows().find((r) => r.id === m1)?.starred === true);
+  expect(await act(m1, "unstar")).toEqual({ kind: "done", action: "unstar" });
+  await until(() => all.rows().find((r) => r.id === m1)?.starred === false);
+  expect(await act(m1, "archive")).toEqual({ kind: "done", action: "archive" });
+  await until(() => !all.rows().some((r) => r.id === m1));
+  expect(await act(m2, "trash")).toEqual({ kind: "done", action: "trash" });
+  await until(() => all.rows().length === 0);
+  expect(sent("/messages/m1/modify")).toHaveLength(3);
+  expect(sent("/messages/m2/trash")).toEqual(["POST"]);
+
+  const back = async () => {
+    await w.tab.run(mail.api["mail.sync"], { input: {} });
+    await until(() => all.rows().some((r) => r.id === m1));
+  };
+  await back();
+  expect(await act(m1, "spam")).toEqual({ kind: "done", action: "spam" });
+  await back();
+  expect(await act(m1, "inbox", `${gid}~SPAM`)).toEqual({ kind: "done", action: "inbox" });
+  await back();
+  expect(await act(m1, "move", "all", "Label_1")).toEqual({ kind: "done", action: "move" });
+  const moves = w.world.requests.filter((r) => r.url.endsWith("/messages/m1/modify"));
+  expect(moves).toHaveLength(6);
+  expect(await act(`${gid}:nope`, "archive")).toEqual({ kind: "gone", id: `${gid}:nope` });
+});
+
+test("mail actions on Outlook: flags and moves over IMAP, or unsupported", async () => {
+  const w = await world();
+  const all = w.box("all");
+  const seen = w.accounts();
+  const folders = w.tab.resolve(mail.board.folders.where({}));
+  folders.watch(() => undefined);
+  await w.signIn("microsoft");
+  await until(() => all.rows().length === 2 && folders.get().length === 4);
+  const mid = seen.list()[0]?.id ?? "";
+  const one = `${mid}:INBOX/11`;
+  const two = `${mid}:INBOX/12`;
+  const act = (target: string, action: MailAction, to?: string) =>
+    w.tab.run(mail.api["mail.act"], { input: { id: target, box: mid, action, to } });
+
+  expect(await act(one, "star")).toEqual({ kind: "done", action: "star" });
+  expect(await act(one, "unstar")).toEqual({ kind: "done", action: "unstar" });
+  expect(await act(one, "trash")).toEqual({ kind: "unsupported", action: "trash" });
+  expect(await act(one, "archive")).toEqual({ kind: "done", action: "archive" });
+  await until(() => !all.rows().some((r) => r.id === one));
+  expect(await act(two, "move", "Projects")).toEqual({ kind: "done", action: "move" });
+  await until(() => all.rows().length === 0);
+  expect(w.world.imap.filter((s) => s.startsWith("flagged") || s.startsWith("move"))).toEqual([
+    "flagged:11:true",
+    "flagged:11:false",
+    "move:11>Archive",
+    "move:12>Projects",
+  ]);
 });
 
 test("the root: the app opens at the inbox; a sign-in with no address is refused", async () => {

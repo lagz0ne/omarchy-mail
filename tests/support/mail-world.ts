@@ -229,6 +229,7 @@ const fakes: Fake[] = [
   ],
   [at("gmail.googleapis.com", `${gmail}/history`), historyPage],
   [at("gmail.googleapis.com", /\/modify$/), (world) => json({}, world.markFails ? 500 : 200)],
+  [at("gmail.googleapis.com", /\/trash$/), () => json({})],
   [at("gmail.googleapis.com", /\/messages\/\w+$/), (_w, url) => gmailMessage(url)],
   [at("login.microsoftonline.com"), microsoftTokens],
   [
@@ -331,8 +332,12 @@ export async function boot(
           : uids.filter((uid) => rowsIn(box).some((r) => String(r.uid) === uid));
         return known.map((uid) => ({ uid: Number(uid), source: new TextEncoder().encode(plain) }));
       },
-      flag: async (box, uid, seen) => {
-        world.imap.push(`flag:${uid}:${seen}${where(box)}`);
+      flag: async (box, uid, flag, on) => {
+        const what = flag === "\\Seen" ? "flag" : "flagged";
+        world.imap.push(`${what}:${uid}:${on}${where(box)}`);
+      },
+      move: async (box, uid, to) => {
+        world.imap.push(`move:${uid}${where(box)}>${to}`);
       },
       close: async () => {
         usable = false;

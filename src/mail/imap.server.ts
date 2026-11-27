@@ -15,7 +15,8 @@ export type ImapSession = {
     limit: number,
   ) => Promise<{ readonly validity: string; readonly rows: unknown[] }>;
   readonly sources: (box: string, uids: readonly string[]) => Promise<unknown[]>;
-  readonly flag: (box: string, uid: string, seen: boolean) => Promise<void>;
+  readonly flag: (box: string, uid: string, flag: string, on: boolean) => Promise<void>;
+  readonly move: (box: string, uid: string, to: string) => Promise<void>;
   readonly close: () => Promise<void>;
 };
 
@@ -74,11 +75,19 @@ const opener = tag<OpenImap>({
           lock.release();
         }
       },
-      flag: async (box, uid, seen) => {
+      flag: async (box, uid, flag, on) => {
         const lock = await client.getMailboxLock(box);
         try {
-          if (seen) await client.messageFlagsAdd(uid, ["\\Seen"], { uid: true });
-          else await client.messageFlagsRemove(uid, ["\\Seen"], { uid: true });
+          if (on) await client.messageFlagsAdd(uid, [flag], { uid: true });
+          else await client.messageFlagsRemove(uid, [flag], { uid: true });
+        } finally {
+          lock.release();
+        }
+      },
+      move: async (box, uid, to) => {
+        const lock = await client.getMailboxLock(box);
+        try {
+          await client.messageMove(uid, to, { uid: true });
         } finally {
           lock.release();
         }
@@ -146,8 +155,16 @@ export const outlookImap = capsule({
         sources: (input: ImapLogin & { readonly box: string; readonly uids: readonly string[] }) =>
           door.using(input, (s) => s.sources(input.box, input.uids)),
         flag: (
-          input: ImapLogin & { readonly box: string; readonly uid: string; readonly seen: boolean },
-        ) => door.using(input, (s) => s.flag(input.box, input.uid, input.seen)),
+          input: ImapLogin & {
+            readonly box: string;
+            readonly uid: string;
+            readonly flag: string;
+            readonly on: boolean;
+          },
+        ) => door.using(input, (s) => s.flag(input.box, input.uid, input.flag, input.on)),
+        move: (
+          input: ImapLogin & { readonly box: string; readonly uid: string; readonly to: string },
+        ) => door.using(input, (s) => s.move(input.box, input.uid, input.to)),
       };
       return door;
     },

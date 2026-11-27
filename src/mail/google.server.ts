@@ -2,6 +2,7 @@ import { operation, tag } from "@tinkered/core";
 import { z } from "zod";
 
 import { clients, origin } from "./config.server";
+import { mailAction, type MailAction } from "./contract";
 import { checkShape, send, sendJson } from "./net.server";
 import { type Pulled, pullInput, refreshed, signedIn } from "./provider.server";
 import type { Folder, Meta } from "./store.server";
@@ -448,5 +449,46 @@ export const googleFolderPull = operation({
       input: { access: input.access, pids: list.messages.map((m) => m.id), label: input.folder },
     });
     return rows;
+  },
+});
+
+const labelChanges = tag<
+  Readonly<Record<Exclude<MailAction, "trash" | "move">, { add: string[]; remove: string[] }>>
+>({
+  label: "google.labelChanges",
+  default: {
+    archive: { add: [], remove: ["INBOX"] },
+    spam: { add: ["SPAM"], remove: ["INBOX"] },
+    inbox: { add: ["INBOX"], remove: ["SPAM", "TRASH"] },
+    star: { add: ["STARRED"], remove: [] },
+    unstar: { add: [], remove: ["STARRED"] },
+  },
+});
+
+export const googleAct = operation({
+  label: "google.act",
+  input: z.object({
+    access: z.string(),
+    pid: z.string(),
+    action: mailAction,
+    from: z.string(),
+    to: z.string().optional(),
+  }),
+  depends: { sendJson, api, labelChanges },
+  run: async ({ sendJson, api, labelChanges }, { input }) => {
+    const at = `${api}/messages/${input.pid}`;
+    const token = input.access;
+    if (input.action === "trash") {
+      await sendJson.run({ input: { url: `${at}/trash`, method: "POST", token } });
+      return "done" as const;
+    }
+
+    const change =
+      input.action === "move"
+        ? { add: input.to ? [input.to] : [], remove: [input.from] }
+        : labelChanges[input.action];
+    const json = { addLabelIds: change.add, removeLabelIds: change.remove };
+    await sendJson.run({ input: { url: `${at}/modify`, method: "POST", token, json } });
+    return "done" as const;
   },
 });

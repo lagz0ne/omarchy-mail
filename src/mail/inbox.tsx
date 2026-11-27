@@ -111,6 +111,7 @@ export function Rail() {
         activeProps={{ className: "box on" }}
         title="All inboxes"
         data-mailbox
+        data-kind="all"
       >
         <StackIcon />
         {open && <span>All inboxes</span>}
@@ -152,6 +153,7 @@ const AccountBoxes = memo(function AccountBoxes({
         className="box avatar"
         activeProps={{ className: "box avatar on" }}
         data-mailbox
+        data-provider={account.provider}
         title={account.error ? `${account.email} · ${account.error}` : account.email}
       >
         <span className={account.error ? "initial warn" : "initial"}>
@@ -162,7 +164,7 @@ const AccountBoxes = memo(function AccountBoxes({
   }
 
   return (
-    <section className="account" aria-label={account.email}>
+    <section className="account" aria-label={account.email} data-provider={account.provider}>
       <AccountHead account={account} />
       <AccountFolders account={account} folders={shown} />
     </section>
@@ -211,6 +213,7 @@ function AccountFolders({ account, folders }: { account: Account; folders: reado
           activeProps={{ className: "box on" }}
           title={folderNames[folder.kind] || folder.name}
           data-mailbox
+          data-kind={folder.kind}
         >
           <FolderIcon kind={folder.kind} />
           <span>{folderNames[folder.kind] || folder.name}</span>
@@ -346,7 +349,14 @@ const MessageRow = memo(function MessageRow({ row }: { row: Row }) {
         className={row.unread ? "row unread" : "row"}
         activeProps={{ className: row.unread ? "row unread on" : "row on" }}
       >
-        <span className="from">{row.fromName || row.fromAddr}</span>
+        <span className="from">
+          {row.fromName || row.fromAddr}
+          {row.starred && (
+            <span className="star" title="Starred">
+              <StarIcon />
+            </span>
+          )}
+        </span>
         <small className="date">
           <When at={row.date} />
         </small>

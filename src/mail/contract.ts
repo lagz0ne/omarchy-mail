@@ -85,7 +85,19 @@ export const syncing = data({ label: "mail.syncing", initial: { busy: false, at:
 
 export const mailBoard = remoteData({ accounts, messages, folders, syncing, trusted });
 
+export const mailAction = z.enum(["archive", "trash", "spam", "inbox", "star", "unstar", "move"]);
+
+export type MailAction = z.infer<typeof mailAction>;
+
 const gone = z.object({ kind: z.literal("gone"), id: z.string() });
+
+const actAnswer = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("done"), action: mailAction }),
+  z.object({ kind: z.literal("unsupported"), action: mailAction }),
+  gone,
+]);
+
+export type ActAnswer = z.infer<typeof actAnswer>;
 
 const attachment = z.object({
   part: z.number(),
@@ -109,6 +121,7 @@ const opened = z.object({
   date: z.number(),
   srcdoc: z.string(),
   remote: z.number(),
+  starred: z.boolean(),
   domain: z.string(),
   trusted: z.boolean(),
   attachments: z.array(attachment),
@@ -124,6 +137,15 @@ export const mailApi = rpc({
   "mail.mark": {
     input: z.object({ id: z.string(), unread: z.boolean() }),
     output: z.discriminatedUnion("kind", [z.object({ kind: z.literal("marked") }), gone]),
+  },
+  "mail.act": {
+    input: z.object({
+      id: z.string(),
+      box: z.string(),
+      action: mailAction,
+      to: z.string().optional(),
+    }),
+    output: actAnswer,
   },
   "image.trust": {
     input: z.object({ domain: z.string().min(1), trust: z.boolean() }),

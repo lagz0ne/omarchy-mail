@@ -23,6 +23,10 @@ const targets = tag<{
     typing: "input, textarea",
     actions: {
       u: '[aria-label="Mark unread"]',
+      e: '[data-act="archive"]',
+      "#": '[data-act="trash"]',
+      s: '[data-act="star"]',
+      "!": '[data-act="spam"]',
       i: ".reader-head a.icon-key.warm",
       Escape: ".reader-head .back",
     },

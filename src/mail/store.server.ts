@@ -470,11 +470,13 @@ export const findMessage = operation({
   depends: { db: store },
   run: ({ db }, { input }) => {
     const found = db
-      .query("select unread, from_addr from messages where account = $account and pid = $pid")
+      .query(
+        "select unread, starred, from_addr from messages where account = $account and pid = $pid",
+      )
       .get({ $account: input.account, $pid: input.pid });
     return found === null
       ? null
-      : z.object({ unread: z.number(), from_addr: z.string() }).parse(found);
+      : z.object({ unread: z.number(), starred: z.number(), from_addr: z.string() }).parse(found);
   },
 });
 
@@ -553,4 +555,51 @@ export const loadTrusted = operation({
     z
       .array(z.object({ domain: z.string(), at: z.number() }))
       .parse(db.query("select domain, at from trusted order by domain").all()),
+});
+
+export const placesOf = operation({
+  label: "store.places",
+  input: z.object({ account: z.string() }),
+  depends: { db: store },
+  run: ({ db }, { input }) =>
+    Object.fromEntries(
+      z
+        .array(z.object({ id: z.string(), kind: folderKind }))
+        .parse(
+          db
+            .query("select id, kind from folders where account = $account")
+            .all({ $account: input.account }),
+        )
+        .map((f) => [f.kind, f.id]),
+    ),
+});
+
+export const applyAct = operation({
+  label: "store.act",
+  input: z.object({
+    account: z.string(),
+    pid: z.string(),
+    from: z.string(),
+    action: z.enum(["archive", "trash", "spam", "inbox", "star", "unstar", "move"]),
+  }),
+  depends: { db: store },
+  run: ({ db }, { input }) => {
+    const key = { $account: input.account, $pid: input.pid };
+    const stars: Record<string, number> = { star: 1, unstar: 0 };
+    const starred = stars[input.action];
+    if (starred !== undefined) {
+      db.query("update messages set starred = $on where account = $account and pid = $pid").run({
+        ...key,
+        $on: starred,
+      });
+      return "starred" as const;
+    }
+
+    const everywhere = input.action === "trash" || input.action === "spam";
+    db.query(
+      `delete from messages where account = $account and pid = $pid
+       and ($everywhere or folder = $from)`,
+    ).run({ ...key, $everywhere: Number(everywhere), $from: input.from });
+    return "moved" as const;
+  },
 });

@@ -12,13 +12,16 @@ import {
   listAccounts,
   loadAccounts,
   loadFolders,
+  placesOf,
+  applyAct,
+  boxOf,
   loadTrusted,
   isTrusted,
   trustDomain,
   loadMessages,
   readRaw,
 } from "./store.server";
-import { markBy, pullBox, rawBy, syncAll } from "./sync.server";
+import { actBy, markBy, pullBox, rawBy, syncAll } from "./sync.server";
 
 export const splitId = operation({
   label: "mail.splitId",
@@ -42,6 +45,7 @@ const ownerOf = operation({
           owner,
           pid,
           unread: found.unread === 1,
+          starred: found.starred === 1,
           domain: found.from_addr.split("@").at(-1)?.toLowerCase() ?? "",
         }
       : null;
@@ -119,7 +123,14 @@ export const openMessage = operation({
         },
       });
     }
-    return { kind: "message" as const, id: input.id, ...page, domain, trusted };
+    return {
+      kind: "message" as const,
+      id: input.id,
+      ...page,
+      starred: found.starred,
+      domain,
+      trusted,
+    };
   },
 });
 
@@ -140,6 +151,39 @@ export const markMessage = operation({
       },
     });
     return { kind: "marked" as const };
+  },
+});
+
+export const actOn = operation({
+  label: "mail.act.do",
+  input: mailApi["mail.act"].input,
+  depends: {
+    ownerOf,
+    boxOf,
+    accessToken,
+    actBy,
+    placesOf,
+    applyAct,
+    invalidate: mailBoard.invalidate,
+  },
+  run: async (deps, { input }) => {
+    const found = deps.ownerOf.run({ input: input.id });
+    if (!found) return { kind: "gone" as const, id: input.id };
+
+    const { owner, pid } = found;
+    const { folder: from } = deps.boxOf.run({ input: input.box });
+    const access = await deps.accessToken.run({
+      input: { account: owner.id, provider: owner.provider },
+    });
+    const places = deps.placesOf.run({ input: { account: owner.id } });
+    const done = await deps.actBy.run({
+      input: { ...input, provider: owner.provider, access, user: owner.email, pid, from, places },
+    });
+    if (done === "unsupported") return { kind: "unsupported" as const, action: input.action };
+
+    deps.applyAct.run({ input: { account: owner.id, pid, from, action: input.action } });
+    await deps.invalidate.run({ input: { messages: {} } });
+    return { kind: "done" as const, action: input.action };
   },
 });
 
@@ -180,6 +224,7 @@ export const mailOps = {
   "mail.sync": syncNow,
   "mail.pull": pullBox,
   "image.trust": trustImages,
+  "mail.act": actOn,
   "account.remove": removeAccount,
 } as const;
 

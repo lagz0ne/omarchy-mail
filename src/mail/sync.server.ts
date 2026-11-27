@@ -2,12 +2,13 @@ import { operation, tag } from "@tinkered/core";
 import { z } from "zod";
 
 import { accessToken } from "./auth.server";
-import { mailBoard, provider, syncing } from "./contract";
+import { mailAction, mailBoard, provider, syncing } from "./contract";
 import {
   googleFolderPull,
   googleFolders,
   googleMark,
   googlePull,
+  googleAct,
   googleRaw,
   googleRaws,
 } from "./google.server";
@@ -15,6 +16,7 @@ import {
   microsoftFolders,
   microsoftMark,
   microsoftPull,
+  microsoftAct,
   microsoftRaw,
   microsoftRaws,
 } from "./microsoft.server";
@@ -74,6 +76,23 @@ export const markBy = operation({
     const call = { input: { access, user, pid, unread } };
     await (input.provider === "google" ? googleMark.run(call) : microsoftMark.run(call));
   },
+});
+
+export const actBy = operation({
+  label: "sync.actBy",
+  input: z.object({
+    provider,
+    access: z.string(),
+    user: z.string(),
+    pid: z.string(),
+    action: mailAction,
+    from: z.string(),
+    to: z.string().optional(),
+    places: z.record(z.string(), z.string()),
+  }),
+  depends: { googleAct, microsoftAct },
+  run: async ({ googleAct, microsoftAct }, { input }) =>
+    input.provider === "google" ? googleAct.run({ input }) : microsoftAct.run({ input }),
 });
 
 const keepPull = operation({

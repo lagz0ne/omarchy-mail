@@ -24,6 +24,12 @@ const colors = z.object({
   accent: hex.default("#798186"),
   selection: hex.default("#343d41"),
   bright_red: hex.default("#de6145"),
+  red: hex.default("#565d60"),
+  yellow: hex.default("#d9dbdc"),
+  green: hex.default("#9fa5a9"),
+  cyan: hex.default("#707070"),
+  blue: hex.default("#798186"),
+  magenta: hex.default("#aeaeae"),
 });
 
 const tomlOf = operation({
@@ -59,7 +65,7 @@ export const sheetOf = operation({
     const c = colorsOf.run({ input });
     if (c === null) return null;
 
-    return `:root{color-scheme:${c.mode};--bg:${c.background};--bg-2:${c.dark_background};--bg-3:${c.darker_background};--bg-up:${c.lighter_background};--fg:${c.foreground};--fg-2:${c.bright_foreground};--dim:${c.dark_foreground};--muted:${c.muted};--accent:${c.accent};--sel:${c.selection};--warm:${c.bright_red};--line:color-mix(in srgb,${c.foreground} 14%,transparent)}`;
+    return `:root{color-scheme:${c.mode};--bg:${c.background};--bg-2:${c.dark_background};--bg-3:${c.darker_background};--bg-up:${c.lighter_background};--fg:${c.foreground};--fg-2:${c.bright_foreground};--dim:${c.dark_foreground};--muted:${c.muted};--accent:${c.accent};--sel:${c.selection};--warm:${c.bright_red};--line:color-mix(in srgb,${c.foreground} 14%,transparent);--red:${c.red};--yellow:${c.yellow};--green:${c.green};--cyan:${c.cyan};--blue:${c.blue};--magenta:${c.magenta}}`;
   },
 });
 
