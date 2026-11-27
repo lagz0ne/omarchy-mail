@@ -1,0 +1,11 @@
+node_modules/
+.env
+.env.*
+!.env.example
+.tanstack/
+dist/
+.bench/
+tests/.gen-*/
+cmds/client-files.gen.ts
+.vitest/
+.tinker/

@@ -1,0 +1,65 @@
+name: gates
+
+# Trunk-based CI: every push to main gets one verdict. The weekly run
+# catches drift in what the lockfile does not pin (runner image, registry).
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 2 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push re-checks the whole tree, so an older run on the same ref may stop.
+concurrency:
+  group: gates-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Playwright's own image: Chromium for the browser test project (tests/browser) and its
+    # system libraries are in it, so no run installs a browser. Its tag is the `playwright`
+    # version in package.json: move both in one commit.
+    container:
+      image: mcr.microsoft.com/playwright:v1.63.0-noble
+    # A real Postgres for the Bun.sql driver tests.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready --health-interval 2s
+          --health-timeout 5s --health-retries 20
+    env:
+      # A job in a container reaches a service by its name, with no port map.
+      PG_URL: postgres://postgres:postgres@postgres:5432/postgres
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Bun from npm: setup-bun needs `unzip`, and the image has none. npm is in the image.
+      - name: Bun 1.4.4
+        run: npm install --global --allow-scripts=bun bun@1.4.4
+      - run: bun install --frozen-lockfile
+      # Fails here, with one clear line, when the image tag and package.json name two versions.
+      - name: The image has the browser this Playwright wants
+        run: test -x "$(bun -e 'import { chromium } from "playwright"; console.log(chromium.executablePath())')"
+      # Bun-first: from here on, a call to `node` fails the run.
+      - name: Block node
+        run: |
+          mkdir -p "$RUNNER_TEMP/no-node"
+          printf '#!/bin/sh\necho "node called: this app runs on Bun only" >&2\nexit 1\n' > "$RUNNER_TEMP/no-node/node"
+          chmod +x "$RUNNER_TEMP/no-node/node"
+          echo "$RUNNER_TEMP/no-node" >> "$GITHUB_PATH"
+      - name: node is blocked
+        run: "! node --version"
+      # Typecheck, tests, and the build with its client check.
+      - run: bun run check
+      # Format and lint (vp check).
+      - run: bun run check:style
+      # No plain helper functions: every named function is an operation.
+      - run: bun run check:plain

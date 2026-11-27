@@ -1,0 +1,106 @@
+import { capsule, data, operation, resource, tag } from "@tinkered/core";
+import type { Resource } from "@tinkered/core";
+import type { PgAsyncDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
+import { z } from "zod";
+
+import type { Errors } from "~/components/errors";
+
+/** Any Postgres-dialect Drizzle database: Bun.sql, PGlite, postgres-js, node-postgres. */
+export type PgDb = PgAsyncDatabase<PgQueryResultHKT, any>;
+export type PgTx = Parameters<Parameters<PgDb["transaction"]>[0]>[0];
+
+/** What a Postgres driver library gives: its Drizzle db and its own migrator. */
+export type PgConnection = {
+  readonly db: PgDb;
+  readonly migrate: (folder: string) => Promise<void>;
+};
+
+/**
+ * The driver's connection resource: `bunSql.connection`, `pglite.connection`.
+ * A slot: a unit that depends on it gets the built connection (ADR 0151).
+ */
+const driver = tag<Resource.Handle<Promise<PgConnection>>>({ label: "drizzlePg.driver" });
+
+/** The drizzle-kit `out` folder, relative to the working directory; `false` skips migrate. */
+const migrations = tag<string | false>({
+  label: "drizzlePg.migrations",
+  default: "drizzle/pg",
+  parse: z.union([z.string().min(1), z.literal(false)]),
+});
+
+/** The root's own closing signal, written at start. A session resource built with this very
+ * signal was built on the root itself: no call owns it, so it would never end. */
+const rootClosing = data<AbortSignal | undefined>({ initial: undefined });
+
+/** The shared db: reads and single statements outside a transaction. */
+const db = resource({
+  label: "drizzlePg.db",
+  depends: { connection: driver },
+  factory: async ({ connection }) => connection.db,
+});
+
+/**
+ * One transaction per session, opened on first use: Drizzle's own transaction call, held open
+ * until the session ends. Success commits; a failure or a forced close rolls back (ADR 0028).
+ */
+const tx = resource({
+  label: "drizzlePg.tx",
+  target: "session",
+  depends: { connection: driver, root: rootClosing },
+  factory: async ({ connection, root }, { closing, defer, raise: coreRaise }): Promise<PgTx> => {
+    const raise: Errors.Raise = coreRaise;
+
+    // The boundary rule: a transaction belongs to a call's own session (a request, a call
+    // with `signal` or `tags`, or `createSession()`), never to the root.
+    if (closing === root) return raise("TransactionNeedsSession", { label: "drizzlePg" });
+
+    const opened = Promise.withResolvers<PgTx>();
+    const ended = Promise.withResolvers<boolean>();
+    const done = connection.db
+      .transaction(async (inner) => {
+        opened.resolve(inner);
+        if (!(await ended.promise)) inner.rollback();
+      })
+      .catch((error: unknown) => {
+        if (Object(error).name !== "TransactionRollbackError") throw error;
+      });
+    const found = await Promise.race([opened.promise, done.then(() => undefined)]);
+    if (!found) return raise("TransactionNotOpened", { label: "drizzlePg" });
+    defer(async (end) => {
+      ended.resolve(end.status === "success");
+      await done;
+    });
+
+    return found;
+  },
+});
+
+/** Brings the schema up to date with the driver's own Drizzle migrator. */
+const migrate = operation({
+  label: "drizzlePg.migrate",
+  depends: { connection: driver, folder: migrations },
+  run: async ({ connection, folder }) => {
+    if (folder !== false) await connection.migrate(folder);
+  },
+});
+
+/**
+ * The Drizzle facade for the Postgres dialect. The command names the driver; the app's
+ * operations depend on `drizzlePg.tx` or `drizzlePg.db` and never see which driver it is.
+ */
+export const drizzlePg = capsule({
+  label: "drizzlePg",
+  config: { driver: driver.required, migrations },
+  exports: { db, tx, migrate },
+  hooks: {
+    async start({ next, run, load, closing }) {
+      // Migrate first, then the later capsules start: Flyway and Rails migrate before the app
+      // serves, so a later start reads the schema and no write waits on migrate's lock.
+      load(rootClosing, { role: "state", explain: "Marks the root, for the boundary rule" }).set(
+        closing,
+      );
+      await run(migrate, {}, { role: "setup", explain: "Brings the schema up to date" });
+      await next();
+    },
+  },
+});
