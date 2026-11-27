@@ -5,6 +5,7 @@ import { z } from "zod";
 import { mail } from "@/mail";
 import { Accounts } from "@/mail/accounts";
 import { Box, Idle, Rail } from "@/mail/inbox";
+import { Palette } from "@/mail/palette";
 import { OpenFailed, Reader } from "@/mail/reader";
 import { ThemeStyle } from "@/theme/theme-style";
 import { PaneSizes } from "@/ui/panes";
@@ -14,6 +15,7 @@ const root = createRootRouteWithContext<{ scope: Scope.Handle }>()({
     <div className="app">
       <ThemeStyle />
       <PaneSizes />
+      <Palette />
       <Rail />
       <Outlet />
     </div>

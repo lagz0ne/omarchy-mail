@@ -3,12 +3,11 @@ import { createScope } from "@tinkered/core";
 import { expect, test } from "vite-plus/test";
 
 import {
-  chooseTheme,
   layout,
+  leave,
   railOpen,
   saveLayout,
   shutAccounts,
-  themeChoice,
   toggleAccount,
   toggleRail,
   ui,
@@ -63,7 +62,7 @@ test("an account's folders fold and unfold, remembered; a broken memory is ignor
   await again.close();
 });
 
-test("a picked theme and pane widths are kept; widths stay within their limits", async () => {
+test("pane widths are kept; widths stay within their limits", async () => {
   const kept = new Map<string, string>([["mail.layout", "{broken"]]);
   const memory = {
     getItem: (key: string) => kept.get(key) ?? null,
@@ -73,9 +72,7 @@ test("a picked theme and pane widths are kept; widths stay within their limits",
     capsules: [exits({ file: process.env.TINKER_EXITS }), ui({ memory })],
   }).ready;
 
-  expect(app.resolve(themeChoice)).toBe("desktop");
   expect(app.resolve(layout)).toEqual({ rail: 224, list: 400 });
-  expect(app.run(chooseTheme, { input: { name: "nord" } })).toBe("nord");
   expect(app.run(saveLayout, { input: { rail: 999, list: 10.4 } })).toEqual({
     rail: 360,
     list: 260,
@@ -89,7 +86,26 @@ test("a picked theme and pane widths are kept; widths stay within their limits",
   const again = await createScope({
     capsules: [exits({ file: process.env.TINKER_EXITS }), ui({ memory })],
   }).ready;
-  expect(again.resolve(themeChoice)).toBe("nord");
   expect(again.resolve(layout)).toEqual({ rail: 251, list: 512 });
   await again.close();
+});
+
+test("leaving goes through the window it was given: away in a new tab, or here", async () => {
+  const went: string[] = [];
+  const fake = {
+    open: (url: string, target: string) => void went.push(`open ${url} ${target}`),
+    location: { assign: (url: string) => void went.push(`here ${url}`) },
+  } as unknown as Window;
+  const app = await createScope({
+    capsules: [exits({ file: process.env.TINKER_EXITS }), ui({ window: fake })],
+  }).ready;
+  expect(app.run(leave, { input: { url: "/api/att/x/1", away: true } })).toBe("left");
+  expect(app.run(leave, { input: { url: "/oauth/start/google", away: false } })).toBe("left");
+  expect(went).toEqual(["open /api/att/x/1 _blank", "here /oauth/start/google"]);
+  await app.close();
+
+  const bare = await createScope({ capsules: [exits({ file: process.env.TINKER_EXITS }), ui()] })
+    .ready;
+  expect(bare.run(leave, { input: { url: "/x", away: true } })).toBe("nowhere");
+  await bare.close();
 });

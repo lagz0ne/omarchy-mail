@@ -1,7 +1,6 @@
 import { useData, useRun } from "@tinkered/react";
-import { memo } from "react";
 
-import { type Swatch, themeBoard } from "@/theme/contract";
+import { type Swatch, themeApi, themeBoard } from "@/theme/contract";
 import { ui } from "@/ui";
 import { PlusIcon, TrashIcon } from "@/ui/icons";
 
@@ -10,6 +9,7 @@ import { When } from "./inbox";
 
 export function Accounts() {
   const list = useData(mailBoard.accounts.where({}));
+  const leave = useRun(ui.leave);
 
   return (
     <section className="page" aria-label="Accounts">
@@ -21,14 +21,22 @@ export function Accounts() {
         ))}
       </ul>
       <div className="actions">
-        <a rel="external" className="key" href="/oauth/start/google">
+        <button
+          type="button"
+          className="key"
+          onClick={() => leave.run({ input: { url: "/oauth/start/google", away: false } })}
+        >
           <PlusIcon />
           Gmail
-        </a>
-        <a rel="external" className="key" href="/oauth/start/microsoft">
+        </button>
+        <button
+          type="button"
+          className="key"
+          onClick={() => leave.run({ input: { url: "/oauth/start/microsoft", away: false } })}
+        >
           <PlusIcon />
           Outlook
-        </a>
+        </button>
       </div>
       <Appearance />
       <Trusted />
@@ -36,7 +44,7 @@ export function Accounts() {
   );
 }
 
-const AccountRow = memo(function AccountRow({ account }: { account: Account }) {
+function AccountRow({ account }: { account: Account }) {
   const remove = useRun(mailApi["account.remove"]);
 
   return (
@@ -66,12 +74,12 @@ const AccountRow = memo(function AccountRow({ account }: { account: Account }) {
       </button>
     </li>
   );
-});
+}
 
 function Appearance() {
   const list = useData(themeBoard.themes.where({}));
-  const choice = useData(ui.themeChoice);
-  const choose = useRun(ui.chooseTheme);
+  const choice = useData(themeBoard.themeChoice);
+  const choose = useRun(themeApi["theme.choose"]);
 
   return (
     <section className="settings" aria-label="Appearance">
@@ -94,8 +102,8 @@ function Appearance() {
   );
 }
 
-const ThemeTile = memo(function ThemeTile({ swatch, on }: { swatch: Swatch; on: boolean }) {
-  const choose = useRun(ui.chooseTheme);
+function ThemeTile({ swatch, on }: { swatch: Swatch; on: boolean }) {
+  const choose = useRun(themeApi["theme.choose"]);
 
   return (
     <button
@@ -114,7 +122,7 @@ const ThemeTile = memo(function ThemeTile({ swatch, on }: { swatch: Swatch; on: 
       <span>{swatch.title}</span>
     </button>
   );
-});
+}
 
 function Trusted() {
   const list = useData(mailBoard.trusted.where({}));

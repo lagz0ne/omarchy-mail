@@ -1,7 +1,9 @@
-import { Link, useNavigate, useRouter } from "@tanstack/react-router";
+import { useNavigate, useRouter } from "@tanstack/react-router";
 import { useData, useRun } from "@tinkered/react";
 import type { ReactNode } from "react";
 
+import { ui } from "@/ui";
+import { Go } from "@/ui/go";
 import {
   ArchiveIcon,
   BackIcon,
@@ -68,17 +70,15 @@ function ImageActions({ message, box, images }: { message: Opened; box: string; 
   return (
     <>
       {message.remote > 0 && !images && !message.trusted && (
-        <Link
-          to="/box/$box/$id"
-          params={{ box, id }}
-          search={{ images: true }}
+        <Go
+          to={["box", box, id]}
+          search="?images=true"
           className="icon-key warm"
           title={`Load ${message.remote} remote images once (i)`}
-          aria-label={`Load ${message.remote} remote images once`}
         >
           <ImageIcon />
           <small>{message.remote}</small>
-        </Link>
+        </Go>
       )}
       {message.remote > 0 && message.domain && <Trust message={message} />}
     </>
@@ -255,15 +255,9 @@ function Message({ message, box, images }: { message: Opened; box: string; image
     <section className="reader" aria-label="Message">
       <header className="reader-head">
         <h2 title={message.subject}>
-          <Link
-            to="/box/$box"
-            params={{ box }}
-            className="back icon-key"
-            title="Back (Esc)"
-            aria-label="Back to the list"
-          >
+          <Go to={["box", box]} exact className="back icon-key" title="Back (Esc)">
             <BackIcon />
-          </Link>
+          </Go>
           {message.subject || "(no subject)"}
         </h2>
         <Tools message={message} box={box} />
@@ -286,17 +280,7 @@ function Message({ message, box, images }: { message: Opened; box: string; image
             <ul className="files">
               {message.attachments.map((a) => (
                 <li key={a.part}>
-                  <a
-                    rel="external"
-                    href={`/api/att/${encodeURIComponent(id)}/${a.part}`}
-                    target="_blank"
-                  >
-                    <ClipIcon />
-                    {a.name}
-                    <small className="label">
-                      <Size bytes={a.size} />
-                    </small>
-                  </a>
+                  <File id={id} part={a.part} name={a.name} size={a.size} />
                 </li>
               ))}
             </ul>
@@ -324,5 +308,26 @@ export function OpenFailed({ error }: { error: unknown }) {
         The mail could not be fetched from its provider. It will be tried again when you open it.
       </p>
     </section>
+  );
+}
+
+function File({ id, part, name, size }: { id: string; part: number; name: string; size: number }) {
+  const leave = useRun(ui.leave);
+
+  return (
+    <button
+      type="button"
+      className="file"
+      title={`Open ${name}`}
+      onClick={() =>
+        leave.run({ input: { url: `/api/att/${encodeURIComponent(id)}/${part}`, away: true } })
+      }
+    >
+      <ClipIcon />
+      {name}
+      <small className="label">
+        <Size bytes={size} />
+      </small>
+    </button>
   );
 }

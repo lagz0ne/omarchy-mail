@@ -1,6 +1,6 @@
 import { capsule, tag } from "@tinkered/core";
 
-import { toggleRail } from "./index";
+import { openPalette, toggleRail } from "./index";
 
 const host = tag<Window>({ label: "keys.window" });
 
@@ -10,16 +10,14 @@ const targets = tag<{
   readonly mailboxes: string;
   readonly rows: string;
   readonly current: string;
-  readonly search: string;
   readonly typing: string;
   readonly actions: Readonly<Record<string, string>>;
 }>({
   label: "keys.targets",
   default: {
     mailboxes: ".rail [data-mailbox]",
-    rows: ".rows a",
+    rows: ".rows .row",
     current: "on",
-    search: ".search input",
     typing: "input, textarea",
     actions: {
       u: '[aria-label="Mark unread"]',
@@ -27,7 +25,7 @@ const targets = tag<{
       "#": '[data-act="trash"]',
       s: '[data-act="star"]',
       "!": '[data-act="spam"]',
-      i: ".reader-head a.icon-key.warm",
+      i: ".reader-head .icon-key.warm",
       Escape: ".reader-head .back",
     },
   },
@@ -78,7 +76,8 @@ export const keys = capsule({
           const row = rows[Math.max(0, Math.min(now + step, rows.length - 1))];
           event.preventDefault();
           row?.click();
-          row?.scrollIntoView({ block: "nearest" });
+          row?.focus({ preventScroll: true });
+          w.requestAnimationFrame(() => row?.scrollIntoView({ block: "nearest" }));
         },
         listen,
       );
@@ -93,7 +92,8 @@ export const keys = capsule({
           lastG = twice ? 0 : now;
           const first = twice ? doc.querySelector<HTMLElement>(at.rows) : null;
           first?.click();
-          first?.scrollIntoView({ block: "nearest" });
+          first?.focus({ preventScroll: true });
+          w.requestAnimationFrame(() => first?.scrollIntoView({ block: "nearest" }));
         },
         listen,
       );
@@ -114,10 +114,16 @@ export const keys = capsule({
       w.addEventListener(
         "keydown",
         (event) => {
-          if (event.key !== "/" || !plain) return;
+          const slash = event.key === "/" && plain;
+          const ctrlK = event.key === "k" && event.ctrlKey;
+          if (!slash && !ctrlK) return;
 
           event.preventDefault();
-          doc.querySelector<HTMLElement>(at.search)?.focus();
+          void run(
+            openPalette,
+            { input: { open: true } },
+            { role: "handler", explain: "Opens the palette" },
+          );
         },
         listen,
       );

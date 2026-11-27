@@ -23,7 +23,7 @@ import { store } from "@/mail/store.server";
 import { runJob } from "@/mail/sync.server";
 import { throttle } from "@/mail/throttle.server";
 import { theme } from "@/theme";
-import { themeLoads, themeServer } from "@/theme/theme.server";
+import { themeLoads, themeOps, themeServer, themeSheetRoute } from "@/theme/theme.server";
 
 import { pages } from "./pages";
 
@@ -100,13 +100,14 @@ export default defineMain(async ({ env, args, signal, stdout, stderr, exit }) =>
 
   const socket = ws.server({
     path: "/rpc",
-    services: [mail.board, mail.api, theme.board],
+    services: [mail.board, mail.api, theme.board, theme.api],
     origin,
   });
   const table = routes({
     stop: signal,
     table: {
       "GET /api/health": health,
+      "GET /api/theme.css": themeSheetRoute,
       "POST /api/telemetry": sink.route,
       ...mailRoutes,
     },
@@ -139,8 +140,14 @@ export default defineMain(async ({ env, args, signal, stdout, stderr, exit }) =>
       }),
       mail.board({ serve: true, load: mailLoads }),
       mail.api({ implement: mailOps }),
-      themeServer({ file: own.colors, dirs: own.themeDirs, looknfeel: own.looknfeel }),
+      themeServer({
+        file: own.colors,
+        dirs: own.themeDirs,
+        looknfeel: own.looknfeel,
+        choiceFile: join(own.dataDir, "theme"),
+      }),
       theme.board({ serve: true, load: themeLoads }),
+      theme.api({ implement: themeOps }),
       socket,
       table,
     ],

@@ -3,7 +3,7 @@ import { readdir } from "node:fs/promises";
 import { capsule, namespace, operation, tag } from "@tinkered/core";
 import { z } from "zod";
 
-import { type Swatch, themeCss } from "./contract";
+import { type Swatch, themeApi, themeChoice, themeCss } from "./contract";
 
 const colorsFile = tag<string>({ label: "theme.file" });
 
@@ -170,12 +170,12 @@ export const loadSheet = operation({
   },
 });
 
-export const themeLoads = { themes: loadThemes, sheets: loadSheet } as const;
+export const themeLoads = { themes: loadThemes } as const;
 
-export const refreshTheme = operation({
-  label: "theme.refresh",
-  depends: { file: colorsFile, css: themeCss.atScope.controller, sheetOf, shapeOf, looknfeel },
-  run: async ({ file, css, sheetOf, shapeOf, looknfeel }) => {
+const desktopSheet = operation({
+  label: "theme.desktop",
+  depends: { file: colorsFile, sheetOf, shapeOf, looknfeel },
+  run: async ({ file, sheetOf, shapeOf, looknfeel }) => {
     const [colors = "", hypr = "", own = ""] = await Promise.all(
       [file, file.replace(/colors\.toml$/, "hyprland.lua"), looknfeel].map((path) =>
         Bun.file(path)
@@ -183,19 +183,77 @@ export const refreshTheme = operation({
           .catch(() => ""),
       ),
     );
-    const sheet = sheetOf.run({ input: { colors, shape: shapeOf.run({ input: [hypr, own] }) } });
+    return sheetOf.run({ input: { colors, shape: shapeOf.run({ input: [hypr, own] }) } });
+  },
+});
+
+export const refreshTheme = operation({
+  label: "theme.refresh",
+  depends: {
+    css: themeCss.atScope.controller,
+    choice: themeChoice.atScope.controller,
+    loadSheet,
+    desktopSheet,
+  },
+  run: async ({ css, choice, loadSheet, desktopSheet }) => {
+    const name = choice.get();
+    const [picked] = name === "desktop" ? [] : await loadSheet.run({ input: { name } });
+    const sheet = picked ? picked.css : await desktopSheet.run();
     if (sheet !== null && sheet !== css.get()) css.set(sheet);
   },
+});
+
+const choiceFile = tag<string>({ label: "theme.choiceFile", default: "" });
+
+export const chooseTheme = operation({
+  label: "theme.choose.do",
+  input: themeApi["theme.choose"].input,
+  depends: {
+    choice: themeChoice.atScope.controller,
+    choiceFile,
+    loadSheet,
+    refreshTheme,
+  },
+  run: async ({ choice, choiceFile, loadSheet, refreshTheme }, { input }) => {
+    const known = input.name === "desktop" || (await loadSheet.run({ input })).length > 0;
+    if (!known) return { kind: "unknown" as const, name: input.name };
+
+    choice.set(input.name);
+    if (choiceFile) await Bun.write(choiceFile, input.name);
+    await refreshTheme.run();
+    return { kind: "chosen" as const, name: input.name };
+  },
+});
+
+export const themeOps = { "theme.choose": chooseTheme } as const;
+
+export const themeSheetRoute = operation({
+  label: "route.themeSheet",
+  depends: { css: themeCss },
+  run: ({ css }) =>
+    new Response(css, { headers: { "content-type": "text/css", "cache-control": "no-store" } }),
 });
 
 const quiet = namespace({ observe: false });
 
 export const themeServer = capsule({
   label: "theme.server",
-  config: { file: colorsFile.required, every, dirs: themeDirs, looknfeel, rounding },
+  config: { file: colorsFile.required, every, dirs: themeDirs, looknfeel, rounding, choiceFile },
   hooks: {
-    async start({ config, next, run, signal }) {
+    async start({ config, next, run, signal, load }) {
       await next();
+      const saved = config.choiceFile
+        ? await Bun.file(config.choiceFile)
+            .text()
+            .catch(() => "")
+        : "";
+      const name = z
+        .string()
+        .trim()
+        .regex(/^[\w.-]+$/)
+        .catch("desktop")
+        .parse(saved);
+      load(themeChoice, { role: "state", explain: "The theme picked in the app" }).set(name);
       const worker = { role: "worker", explain: "Reads the theme file when it changes" } as const;
       await run(refreshTheme, { ns: quiet }, worker);
 

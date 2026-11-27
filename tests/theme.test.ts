@@ -9,7 +9,14 @@ import { afterAll, expect, test } from "vite-plus/test";
 
 import { theme } from "@/theme";
 import { themeCss } from "@/theme/contract";
-import { loadSheet, shapeOf, themeLoads, themeServer } from "@/theme/theme.server";
+import {
+  loadSheet,
+  shapeOf,
+  themeLoads,
+  themeOps,
+  themeServer,
+  themeSheetRoute,
+} from "@/theme/theme.server";
 
 const folder = mkdtempSync(join(tmpdir(), "theme-"));
 afterAll(() => rmSync(folder, { recursive: true, force: true }));
@@ -98,9 +105,8 @@ test("every installed theme is listed, and each has its sheet", async () => {
   await until(() => list.get().length === 2);
   expect(list.get().map((t) => `${t.title}:${t.bg}`)).toEqual(["Nord:#2e3440", "Swiss:#101315"]);
 
-  const nord = tab.resolve(theme.board.sheets.of({ name: "nord" }));
-  nord.watch(() => undefined);
-  await until(() => nord.get()?.css.includes("--bg:#2e3440") ?? false);
+  const [nord] = await server.run(loadSheet, { input: { name: "nord" } });
+  expect(nord?.css).toContain("--bg:#2e3440");
   expect(await server.run(loadSheet, { input: { name: "../etc" } })).toEqual([]);
   expect(await server.run(loadSheet, { input: { name: "missing" } })).toEqual([]);
 
@@ -136,4 +142,57 @@ test("corners follow the theme's Hyprland rounding, then looknfeel, then square"
   expect(app.resolve(themeCss)).toContain("--radius:14px;--corner:squircle");
   expect(app.run(shapeOf, { input: ["-- rounding = 3", ""] })).toEqual({ radius: 0, power: 2 });
   await app.close();
+});
+
+test("the picked theme is the server's: pushed live, served as a stylesheet, kept on restart", async () => {
+  const dirs = join(folder, "picked");
+  mkdirSync(join(dirs, "nord"), { recursive: true });
+  writeFileSync(join(dirs, "nord", "colors.toml"), 'background = "#2e3440"\n');
+  const file = join(folder, "desktop.toml");
+  writeFileSync(file, 'background = "#101315"\n');
+  const choiceFile = join(folder, "choice");
+  const boot = async () => {
+    const server = await createScope({
+      capsules: [
+        exits({ file: process.env.TINKER_EXITS }),
+        themeServer({ file, every: 1_000, dirs: [dirs], choiceFile }),
+        theme.board({ serve: true, load: themeLoads }),
+        theme.api({ implement: themeOps }),
+        memory.server({ services: [theme.board, theme.api] }),
+      ],
+    }).ready;
+    const tab = await createScope({
+      capsules: [
+        exits({ file: process.env.TINKER_EXITS }),
+        memory.client({ peer: server }),
+        theme.board({ read: memory.client }),
+        theme.api({ remote: memory.client }),
+      ],
+    }).ready;
+    const css = tab.resolve(theme.board.themeCss);
+    css.watch(() => undefined);
+    return { server, tab, css };
+  };
+
+  const first = await boot();
+  await until(() => first.css.get().includes("--bg:#101315"));
+  const choose = (name: string) => first.tab.run(theme.api["theme.choose"], { input: { name } });
+  expect(await choose("nord")).toEqual({ kind: "chosen", name: "nord" });
+  await until(() => first.css.get().includes("--bg:#2e3440"));
+  expect(await choose("missing")).toEqual({ kind: "unknown", name: "missing" });
+  const sheet = first.server.run(themeSheetRoute);
+  expect(sheet.headers.get("content-type")).toBe("text/css");
+  expect(await sheet.text()).toContain("--bg:#2e3440");
+  await first.tab.close();
+  await first.server.close();
+
+  const again = await boot();
+  await until(() => again.css.get().includes("--bg:#2e3440"));
+  expect(await again.tab.run(theme.api["theme.choose"], { input: { name: "desktop" } })).toEqual({
+    kind: "chosen",
+    name: "desktop",
+  });
+  await until(() => again.css.get().includes("--bg:#101315"));
+  await again.tab.close();
+  await again.server.close();
 });

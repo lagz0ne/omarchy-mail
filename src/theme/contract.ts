@@ -1,4 +1,4 @@
-import { data, remoteData } from "@tinkered/core";
+import { data, remoteData, rpc } from "@tinkered/core";
 import { z } from "zod";
 
 export const themeCss = data({ label: "theme.css", initial: "" });
@@ -22,11 +22,16 @@ export const themes = data({
   key: (t) => ({ name: t.name }),
 });
 
-export const sheets = data({
-  label: "theme.sheets",
-  mode: "keyed",
-  parse: z.object({ name: z.string(), css: z.string() }),
-  key: (s) => ({ name: s.name }),
-});
+export const themeChoice = data({ label: "theme.choice", initial: "desktop" });
 
-export const themeBoard = remoteData({ themeCss, themes, sheets });
+export const themeBoard = remoteData({ themeCss, themes, themeChoice });
+
+export const themeApi = rpc({
+  "theme.choose": {
+    input: z.object({ name: z.string().regex(/^[\w.-]+$/) }),
+    output: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("chosen"), name: z.string() }),
+      z.object({ kind: z.literal("unknown"), name: z.string() }),
+    ]),
+  },
+});

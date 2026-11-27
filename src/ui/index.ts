@@ -16,8 +16,6 @@ export const railOpen = data({ label: "ui.railOpen", initial: true });
 
 export const shutAccounts = data<readonly string[]>({ label: "ui.shutAccounts", initial: [] });
 
-const themeKey = tag<string>({ label: "ui.themeKey", default: "mail.theme" });
-
 const layoutKey = tag<string>({ label: "ui.layoutKey", default: "mail.layout" });
 
 const widths = tag<{
@@ -28,22 +26,45 @@ const widths = tag<{
   default: { rail: [180, 360], list: [260, 640] },
 });
 
-export const themeChoice = data({ label: "ui.theme", initial: "desktop" });
+const host = tag<Window | null>({ label: "ui.window", default: null });
+
+export const paletteOpen = data({ label: "ui.paletteOpen", initial: false });
+
+export const paletteQuery = data({ label: "ui.paletteQuery", initial: "" });
+
+export const paletteAt = data({ label: "ui.paletteAt", initial: 0 });
+
+export const openPalette = operation({
+  label: "ui.openPalette",
+  input: z.object({ open: z.boolean() }),
+  depends: {
+    open: paletteOpen.atScope.controller,
+    query: paletteQuery.atScope.controller,
+    at: paletteAt.atScope.controller,
+  },
+  run: ({ open, query, at }, { input }) => {
+    open.set(input.open);
+    query.set("");
+    at.set(0);
+    return input.open;
+  },
+});
+
+export const leave = operation({
+  label: "ui.leave",
+  input: z.object({ url: z.string(), away: z.boolean() }),
+  depends: { host },
+  run: ({ host }, { input }) => {
+    if (!host) return "nowhere" as const;
+    if (input.away) host.open(input.url, "_blank", "noopener");
+    else host.location.assign(input.url);
+    return "left" as const;
+  },
+});
 
 export const layout = data({ label: "ui.layout", initial: { rail: 224, list: 400 } });
 
 const layoutShape = z.object({ rail: z.number(), list: z.number() });
-
-export const chooseTheme = operation({
-  label: "ui.chooseTheme",
-  input: z.object({ name: z.string().regex(/^[\w.-]+$/) }),
-  depends: { theme: themeChoice.atScope.controller, memory, themeKey },
-  run: ({ theme, memory, themeKey }, { input }) => {
-    theme.set(input.name);
-    memory?.setItem(themeKey, input.name);
-    return input.name;
-  },
-});
 
 export const saveLayout = operation({
   label: "ui.saveLayout",
@@ -102,16 +123,17 @@ export const toggleRail = operation({
 
 export const ui = capsule({
   label: "ui",
-  config: { memory, railKey, shutKey, themeKey, layoutKey },
+  config: { memory, railKey, shutKey, layoutKey, window: host },
   exports: {
     railOpen,
     toggleRail,
     shutAccounts,
     toggleAccount,
-    themeChoice,
-    chooseTheme,
     layout,
     saveLayout,
+    paletteOpen,
+    openPalette,
+    leave,
   },
   hooks: {
     async start({ config, next, load }) {
@@ -128,13 +150,6 @@ export const ui = capsule({
       load(shutAccounts, { role: "state", explain: "The accounts folded in the sidebar" }).set(
         shut,
       );
-
-      const theme = z
-        .string()
-        .regex(/^[\w.-]+$/)
-        .catch("desktop")
-        .parse(config.memory?.getItem(config.themeKey));
-      load(themeChoice, { role: "state", explain: "The theme picked in the app" }).set(theme);
 
       const sizes = jsonOf.pipe(layoutShape).safeParse(config.memory?.getItem(config.layoutKey));
       if (sizes.success) {

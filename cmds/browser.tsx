@@ -25,7 +25,8 @@ const app = createScope({
     mail.board({ read: ws.client, refetchInterval: { messages: 60_000 } }),
     mail.api({ remote: ws.client }),
     theme.board({ read: ws.client }),
-    ui({ memory: localStorage }),
+    theme.api({ remote: ws.client }),
+    ui({ memory: localStorage, window }),
     keys({ window }),
     drag({ window }),
   ],
@@ -45,7 +46,7 @@ const live = await app.ready;
 const router = createRouter({
   routeTree,
   context: { scope: live },
-  scrollRestoration: true,
+  scrollRestoration: false,
   defaultErrorComponent: TinkerError,
   defaultNotFoundComponent: TinkerNotFound,
   Wrap: ({ children }) => <ScopeProvider scope={live}>{children}</ScopeProvider>,

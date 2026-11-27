@@ -1,9 +1,10 @@
-import { Link, Outlet, useNavigate } from "@tanstack/react-router";
+import { Outlet } from "@tanstack/react-router";
 import type { PartState } from "@tinkered/core";
 import { useData, useRun } from "@tinkered/react";
-import { memo, type ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import { ui } from "@/ui";
+import { Go } from "@/ui/go";
 import {
   ArchiveIcon,
   ClipIcon,
@@ -12,7 +13,6 @@ import {
   GearIcon,
   InboxIcon,
   PanelIcon,
-  SearchIcon,
   SendIcon,
   SpamIcon,
   ChevronIcon,
@@ -41,7 +41,7 @@ export function When({ at }: { at: number }) {
   return <time dateTime={day.toISOString()}>{text}</time>;
 }
 
-const folderNames: Record<FolderRow["kind"], string> = {
+export const folderNames: Record<FolderRow["kind"], string> = {
   inbox: "Inbox",
   starred: "Starred",
   important: "Important",
@@ -104,18 +104,15 @@ export function Rail() {
           <PanelIcon open={open} />
         </button>
       </div>
-      <Link
-        to="/box/$box"
-        params={{ box: "all" }}
+      <Go
+        to={["box", "all"]}
         className="box"
-        activeProps={{ className: "box on" }}
         title="All inboxes"
-        data-mailbox
-        data-kind="all"
+        data={{ "data-mailbox": "", "data-kind": "all" }}
       >
         <StackIcon />
         {open && <span>All inboxes</span>}
-      </Link>
+      </Go>
       <div className="rail-boxes">
         {list.map((account) => (
           <AccountBoxes key={account.id} account={account} open={open} />
@@ -124,22 +121,16 @@ export function Rail() {
       {open && <Grip pane="rail" />}
       <div className="rail-foot">
         <SyncState open={open} />
-        <Link to="/accounts" className="box" activeProps={{ className: "box on" }} title="Accounts">
+        <Go to={["accounts"]} className="box" title="Accounts">
           <GearIcon />
           {open && <span>Accounts</span>}
-        </Link>
+        </Go>
       </div>
     </nav>
   );
 }
 
-const AccountBoxes = memo(function AccountBoxes({
-  account,
-  open,
-}: {
-  account: Account;
-  open: boolean;
-}) {
+function AccountBoxes({ account, open }: { account: Account; open: boolean }) {
   const folders = useData(mailBoard.folders.where({ account: account.id }));
   const shown = folders.length
     ? folders
@@ -147,19 +138,16 @@ const AccountBoxes = memo(function AccountBoxes({
 
   if (!open) {
     return (
-      <Link
-        to="/box/$box"
-        params={{ box: account.id }}
+      <Go
+        to={["box", account.id]}
         className="box avatar"
-        activeProps={{ className: "box avatar on" }}
-        data-mailbox
-        data-provider={account.provider}
+        data={{ "data-mailbox": "", "data-provider": account.provider }}
         title={account.error ? `${account.email} · ${account.error}` : account.email}
       >
         <span className={account.error ? "initial warn" : "initial"}>
           {account.email.slice(0, 1).toUpperCase()}
         </span>
-      </Link>
+      </Go>
     );
   }
 
@@ -169,7 +157,7 @@ const AccountBoxes = memo(function AccountBoxes({
       <AccountFolders account={account} folders={shown} />
     </section>
   );
-});
+}
 
 function AccountHead({ account }: { account: Account }) {
   const shut = useData(ui.shutAccounts).includes(account.id);
@@ -205,19 +193,16 @@ function AccountFolders({ account, folders }: { account: Account; folders: reado
   return (
     <>
       {folders.map((folder) => (
-        <Link
+        <Go
           key={folder.id}
-          to="/box/$box"
-          params={{ box: folder.id === "INBOX" ? account.id : `${account.id}~${folder.id}` }}
+          to={["box", folder.id === "INBOX" ? account.id : `${account.id}~${folder.id}`]}
           className="box"
-          activeProps={{ className: "box on" }}
           title={folderNames[folder.kind] || folder.name}
-          data-mailbox
-          data-kind={folder.kind}
+          data={{ "data-mailbox": "", "data-kind": folder.kind }}
         >
           <FolderIcon kind={folder.kind} />
           <span>{folderNames[folder.kind] || folder.name}</span>
-        </Link>
+        </Go>
       ))}
     </>
   );
@@ -257,32 +242,8 @@ function BoxTitle({ box, unread, count }: { box: string; unread: number; count: 
 }
 
 function BoxHead({ box, unread, count }: { box: string; unread: number; count: number }) {
-  const navigate = useNavigate();
-  const query = box.startsWith("search:") ? box.slice(7) : "";
-
   return (
     <header className="list-head">
-      <form
-        role="search"
-        className="search"
-        onSubmit={(event) => {
-          event.preventDefault();
-          const q = new FormData(event.currentTarget).get("q");
-          const words = typeof q === "string" ? q.trim() : "";
-          void navigate({ to: "/box/$box", params: { box: words ? `search:${words}` : "all" } });
-        }}
-      >
-        <input
-          key={box}
-          name="q"
-          type="search"
-          aria-label="Search mail"
-          placeholder="Search every inbox"
-          defaultValue={query}
-          autoComplete="off"
-        />
-        <SearchIcon />
-      </form>
       <BoxTitle box={box} unread={unread} count={count} />
     </header>
   );
@@ -293,7 +254,11 @@ function Empty({ searching }: { searching: boolean }) {
 
   return (
     <p className="quiet">
-      Nothing here. <Link to="/accounts">Add an account</Link>.
+      Nothing here.{" "}
+      <Go to={["accounts"]} className="inline">
+        Add an account
+      </Go>
+      .
     </p>
   );
 }
@@ -328,27 +293,24 @@ export function Box({ box }: { box: string }) {
       <section className="list" aria-label="Messages">
         <Grip pane="list" />
         <BoxHead box={box} unread={list.filter((m) => m.unread).length} count={list.length} />
-        <BoxState state={state} empty={list.length === 0} searching={box.startsWith("search:")} />
-        <ol className="rows">
-          {list.map((m) => (
-            <MessageRow key={m.id} row={m} />
-          ))}
-        </ol>
+        <div className="list-card">
+          <BoxState state={state} empty={list.length === 0} searching={box.startsWith("search:")} />
+          <ol className="rows">
+            {list.map((m) => (
+              <MessageRow key={m.id} row={m} />
+            ))}
+          </ol>
+        </div>
       </section>
       <Outlet />
     </>
   );
 }
 
-const MessageRow = memo(function MessageRow({ row }: { row: Row }) {
+function MessageRow({ row }: { row: Row }) {
   return (
     <li>
-      <Link
-        to="/box/$box/$id"
-        params={{ box: row.box, id: row.id }}
-        className={row.unread ? "row unread" : "row"}
-        activeProps={{ className: row.unread ? "row unread on" : "row on" }}
-      >
+      <Go to={["box", row.box, row.id]} className={row.unread ? "row unread" : "row"}>
         <span className="from">
           {row.fromName || row.fromAddr}
           {row.starred && (
@@ -365,10 +327,10 @@ const MessageRow = memo(function MessageRow({ row }: { row: Row }) {
           {row.subject || "(no subject)"}
         </span>
         <span className="snippet">{row.snippet}</span>
-      </Link>
+      </Go>
     </li>
   );
-});
+}
 
 export function Idle() {
   return (

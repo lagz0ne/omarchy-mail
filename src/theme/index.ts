@@ -1,5 +1,5 @@
 import { capsule } from "@tinkered/core";
 
-import { themeBoard } from "./contract";
+import { themeApi, themeBoard } from "./contract";
 
-export const theme = capsule({ label: "theme", exports: { board: themeBoard } });
+export const theme = capsule({ label: "theme", exports: { board: themeBoard, api: themeApi } });

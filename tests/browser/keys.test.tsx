@@ -2,18 +2,22 @@ import { exits } from "@tinkered/cli/test";
 import { createScope } from "@tinkered/core";
 import { expect, test } from "vite-plus/test";
 
-import { railOpen, ui } from "@/ui";
+import { openPalette, paletteOpen, railOpen, ui } from "@/ui";
 import { keys } from "@/ui/keys";
 
 const page = () => {
   document.body.innerHTML = `
     <nav class="rail"><a data-mailbox href="#a">all</a><a data-mailbox href="#b">sent</a></nav>
-    <form class="search"><input /></form>
-    <ol class="rows"><li><a href="#1">1</a></li><li><a href="#2">2</a></li><li><a href="#3">3</a></li></ol>
+    <input class="field" />
+    <ol class="rows"><li><button class="row">1</button></li><li><button class="row">2</button></li><li><button class="row">3</button></li></ol>
     <header class="reader-head">
-      <a class="back" href="#back">back</a>
+      <button class="back">back</button>
       <button aria-label="Mark unread">u</button>
-      <a class="icon-key warm" href="#img">img</a>
+      <button class="icon-key warm">img</button>
+      <button data-act="archive">e</button>
+      <button data-act="trash">#</button>
+      <button data-act="star">s</button>
+      <button data-act="spam">!</button>
     </header>`;
   const clicked: string[] = [];
   for (const el of document.querySelectorAll<HTMLElement>("a, button")) {
@@ -21,7 +25,7 @@ const page = () => {
       event.preventDefault();
       clicked.push(el.textContent ?? "");
       if (el.closest(".rows")) {
-        for (const row of document.querySelectorAll(".rows a")) row.classList.remove("on");
+        for (const row of document.querySelectorAll(".rows .row")) row.classList.remove("on");
         el.classList.add("on");
       }
     });
@@ -32,7 +36,7 @@ const page = () => {
 const press = (key: string, more: KeyboardEventInit = {}) =>
   window.dispatchEvent(new KeyboardEvent("keydown", { key, cancelable: true, ...more }));
 
-test("mailboxes by Ctrl+N, mail by vim keys, actions, search, and the sidebar", async () => {
+test("mailboxes by Ctrl+N, mail by vim keys, actions, the palette, and the sidebar", async () => {
   const clicked = page();
   const app = await createScope({
     capsules: [exits({ store: localStorage }), ui(), keys({ window, twiceWithin: 300 })],
@@ -56,16 +60,27 @@ test("mailboxes by Ctrl+N, mail by vim keys, actions, search, and the sidebar", 
   clicked.length = 0;
   press("u");
   press("i");
+  press("e");
+  press("#");
+  press("s");
+  press("!");
   press("Escape");
   press("x");
-  expect(clicked).toEqual(["u", "img", "back"]);
+  expect(clicked).toEqual(["u", "img", "e", "#", "s", "!", "back"]);
 
   press("/");
-  expect(document.activeElement).toBe(document.querySelector(".search input"));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(app.resolve(paletteOpen)).toBe(true);
+  app.run(openPalette, { input: { open: false } });
+  press("k", { ctrlKey: true });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(app.resolve(paletteOpen)).toBe(true);
+
+  document.querySelector<HTMLInputElement>(".field")?.focus();
   clicked.length = 0;
   press("j");
   expect(clicked).toEqual([]);
-  document.querySelector<HTMLInputElement>(".search input")?.blur();
+  document.querySelector<HTMLInputElement>(".field")?.blur();
 
   expect(app.resolve(railOpen)).toBe(true);
   press("\\", { ctrlKey: true });
