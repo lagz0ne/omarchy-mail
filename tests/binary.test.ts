@@ -45,7 +45,7 @@ async function build() {
 
 /** Runs the binary from an empty folder; resolves once it listens. */
 async function start(collector: string) {
-  const child = Bun.spawn([join(out, "server")], {
+  const child = Bun.spawn([join(out, "server"), "serve"], {
     cwd: mkdtempSync(join(tmpdir(), "binary-cwd-")),
     env: {
       PATH: process.env.PATH,

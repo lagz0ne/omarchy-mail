@@ -1,4 +1,8 @@
 account.remove.do exits{gone,removed} reads{} writes{} calls{?,auth.forget,store.account.drop}
+app.ensureServer exits{value} reads{} writes{} calls{}
+app.focus exits{value} reads{} writes{} calls{}
+app.open exits{value} reads{} writes{} calls{app.ensureServer,app.focus,app.window}
+app.window exits{value} reads{} writes{} calls{}
 auth.begin exits{value} reads{?} writes{?} calls{auth.challenge,google.authUrl,microsoft.authUrl}
 auth.challenge exits{value} reads{} writes{} calls{}
 auth.finish exits{signed,unknown} reads{?} writes{?} calls{google.exchange,microsoft.exchange}

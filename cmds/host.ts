@@ -2,8 +2,9 @@ import { run } from "@tinkered/bun";
 
 import { pinLoopback } from "~/base/loopback";
 
-import main from "./server";
+import open from "./open";
+import serve from "./server";
 
 pinLoopback();
 
-await run(main);
+await run(process.argv[2] === "serve" ? serve : open);

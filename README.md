@@ -1,7 +1,9 @@
 # Mail
 
-A small mail client for Omarchy: Gmail and Outlook.com in one Swiss-styled window. It is one Bun
-binary (server and page together) on `127.0.0.1:6245`, opened as an Omarchy web app.
+A small mail client for Omarchy: Gmail and Outlook.com in one window. It is one Bun binary:
+`omarchy-mail serve` is the server (page inside) on `127.0.0.1:6245`, run as a user service;
+`omarchy-mail` opens the app: it starts the server if it is down, then focuses its window or opens
+one (Chromium app mode, own profile, window class `chrome-127.0.0.1__-OmarchyMail`).
 
 Built on [Tinker](https://github.com/lagz0ne/tinkered) from the
 [tinker-app](https://github.com/lagz0ne/tinker-app) template.

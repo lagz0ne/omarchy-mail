@@ -74,8 +74,8 @@ const mailEnv = z
   }));
 
 export default defineMain(async ({ env, args, signal, stdout, stderr, exit }) => {
-  if (args.length) {
-    stderr.write("Usage: mail\n");
+  if (args.some((arg) => arg !== "serve")) {
+    stderr.write("Usage: omarchy-mail [serve]\n");
     exit(64);
     return { closed: Promise.resolve() };
   }

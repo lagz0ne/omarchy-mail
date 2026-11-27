@@ -1,9 +1,9 @@
 #!/bin/bash
 # Builds the one binary and installs Mail for this user:
-#   ~/.local/bin/omarchy-mail              the server (page inside)
+#   ~/.local/bin/omarchy-mail              the app: "serve" runs the server, no argument opens the window
 #   ~/.config/omarchy-mail/env             OAuth client ids, port (kept if present)
 #   ~/.config/systemd/user/omarchy-mail.service
-#   an Omarchy web app "Mail" at http://127.0.0.1:6245 (focus-or-launch, one window)
+#   a launcher entry "Mail" that runs omarchy-mail: it starts the server if needed, then focuses or opens its window
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -45,7 +45,7 @@ After=graphical-session.target
 
 [Service]
 EnvironmentFile=%h/.config/omarchy-mail/env
-ExecStart=%h/.local/bin/omarchy-mail
+ExecStart=%h/.local/bin/omarchy-mail serve
 Restart=on-failure
 RestartSec=3
 
@@ -56,8 +56,19 @@ systemctl --user daemon-reload
 systemctl --user enable omarchy-mail.service
 systemctl --user restart omarchy-mail.service
 
-port=$(sed -n 's/^PORT=//p' "$conf/env")
-url="http://127.0.0.1:${port:-6245}"
-omarchy-webapp-install "Mail" "$url" "$PWD/assets/icon.png" \
-  "$HOME/.local/bin/focus-or-launch --prefix chrome-127.0.0.1,msedge-127.0.0.1 -- omarchy-launch-webapp $url"
-echo "Mail: $url (service: systemctl --user status omarchy-mail)"
+install -Dm644 assets/icon.png "$HOME/.local/share/icons/hicolor/256x256/apps/omarchy-mail.png"
+cat >"$HOME/.local/share/applications/Mail.desktop" <<DESKTOP
+[Desktop Entry]
+Version=1.0
+Name=Mail
+Comment=Gmail and Outlook in one window
+Exec=$HOME/.local/bin/omarchy-mail
+Icon=omarchy-mail
+Terminal=false
+Type=Application
+StartupNotify=true
+StartupWMClass=chrome-127.0.0.1__-OmarchyMail
+Categories=Network;Email;
+DESKTOP
+update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+echo "Mail: run omarchy-mail (service: systemctl --user status omarchy-mail)"
