@@ -29,6 +29,9 @@ const index = createRoute({
 const box = createRoute({
   getParentRoute: () => root,
   path: "/box/$box",
+  loader: ({ context, params }) => {
+    void context.scope.settle(mail.api["mail.pull"], { input: { box: params.box } });
+  },
   component: () => <Box box={box.useParams().box} />,
 });
 

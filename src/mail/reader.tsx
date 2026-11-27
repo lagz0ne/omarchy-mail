@@ -1,6 +1,8 @@
 import { Link } from "@tanstack/react-router";
 import { useRun } from "@tinkered/react";
 
+import { ClipIcon, ImageIcon, UnreadIcon } from "@/ui/icons";
+
 import { type Address, mailApi, type Opened } from "./contract";
 import { When } from "./inbox";
 
@@ -65,19 +67,24 @@ function Message({ message, box, images }: { message: Opened; box: string; image
         <div className="actions">
           <button
             type="button"
-            className="key"
+            className="icon-key"
+            title="Mark unread"
+            aria-label="Mark unread"
             onClick={() => mark.run({ input: { id, unread: true } })}
           >
-            Mark unread
+            <UnreadIcon />
           </button>
           {message.remote > 0 && !images && (
             <Link
               to="/box/$box/$id"
               params={{ box, id }}
               search={{ images: true }}
-              className="key warm"
+              className="icon-key warm"
+              title={`Load ${message.remote} remote images`}
+              aria-label={`Load ${message.remote} remote images`}
             >
-              Load {message.remote} images
+              <ImageIcon />
+              <small>{message.remote}</small>
             </Link>
           )}
         </div>
@@ -90,6 +97,7 @@ function Message({ message, box, images }: { message: Opened; box: string; image
                   href={`/api/att/${encodeURIComponent(id)}/${a.part}`}
                   target="_blank"
                 >
+                  <ClipIcon />
                   {a.name}{" "}
                   <small className="label">
                     <Size bytes={a.size} />

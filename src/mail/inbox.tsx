@@ -1,9 +1,28 @@
 import { Link, Outlet, useNavigate } from "@tanstack/react-router";
 import type { PartState } from "@tinkered/core";
 import { useData, useRun } from "@tinkered/react";
-import { memo } from "react";
+import { memo, type ReactNode } from "react";
 
-import { type Account, mailApi, mailBoard, type Row } from "./contract";
+import { ui } from "@/ui";
+import {
+  ArchiveIcon,
+  ClipIcon,
+  DraftIcon,
+  FlagIcon,
+  GearIcon,
+  InboxIcon,
+  PanelIcon,
+  SearchIcon,
+  SendIcon,
+  SpamIcon,
+  StackIcon,
+  StarIcon,
+  SyncIcon,
+  TagIcon,
+  TrashIcon,
+} from "@/ui/icons";
+
+import { type Account, type FolderRow, mailBoard, type Row } from "./contract";
 
 export function When({ at }: { at: number }) {
   const day = new Date(at);
@@ -20,65 +39,186 @@ export function When({ at }: { at: number }) {
   return <time dateTime={day.toISOString()}>{text}</time>;
 }
 
-export function Rail() {
-  const list = useData(mailBoard.accounts.where({}));
-  const sync = useRun(mailApi["mail.sync"]);
-  const last = Math.max(0, ...list.map((a) => a.syncedAt));
+const folderNames: Record<FolderRow["kind"], string> = {
+  inbox: "Inbox",
+  starred: "Starred",
+  important: "Important",
+  sent: "Sent",
+  drafts: "Drafts",
+  spam: "Spam",
+  trash: "Trash",
+  archive: "Archive",
+  label: "",
+};
+
+const folderIcons: Record<FolderRow["kind"], () => ReactNode> = {
+  inbox: InboxIcon,
+  starred: StarIcon,
+  important: FlagIcon,
+  sent: SendIcon,
+  drafts: DraftIcon,
+  spam: SpamIcon,
+  trash: TrashIcon,
+  archive: ArchiveIcon,
+  label: TagIcon,
+};
+
+export function FolderIcon({ kind }: { kind: FolderRow["kind"] }) {
+  const Glyph = folderIcons[kind];
+  return <Glyph />;
+}
+
+function SyncState({ open }: { open: boolean }) {
+  const state = useData(mailBoard.syncing);
+  const words = state.busy ? "Syncing" : state.at ? "Synced" : "Waiting to sync";
 
   return (
-    <nav className="rail" aria-label="Boxes">
-      <small className="label">Mail</small>
+    <span className="sync" title={words} aria-live="polite">
+      <SyncIcon busy={state.busy} />
+      {open && (
+        <small className="label">{state.busy || !state.at ? words : <When at={state.at} />}</small>
+      )}
+    </span>
+  );
+}
+
+export function Rail() {
+  const open = useData(ui.railOpen);
+  const toggle = useRun(ui.toggleRail);
+  const list = useData(mailBoard.accounts.where({}));
+  const label = open ? "Collapse sidebar (Ctrl+\\)" : "Expand sidebar (Ctrl+\\)";
+
+  return (
+    <nav className={open ? "rail" : "rail shut"} aria-label="Boxes">
+      <div className="rail-top">
+        {open && <small className="label">Mail</small>}
+        <button
+          type="button"
+          className="icon-key"
+          title={label}
+          aria-label={label}
+          onClick={() => toggle.run()}
+        >
+          <PanelIcon open={open} />
+        </button>
+      </div>
       <Link
         to="/box/$box"
         params={{ box: "all" }}
         className="box"
         activeProps={{ className: "box on" }}
+        title="All inboxes"
       >
-        All inboxes
+        <StackIcon />
+        {open && <span>All inboxes</span>}
       </Link>
-      {list.map((account) => (
-        <BoxLink key={account.id} account={account} />
-      ))}
+      <div className="rail-boxes">
+        {list.map((account) => (
+          <AccountBoxes key={account.id} account={account} open={open} />
+        ))}
+      </div>
       <div className="rail-foot">
-        <button
-          type="button"
-          className="key"
-          disabled={sync.isPending}
-          onClick={() => sync.run({ input: {} })}
-        >
-          {sync.isPending ? "Syncing" : "Sync"}
-        </button>
-        <small className="label">{last ? <When at={last} /> : "Never synced"}</small>
-        <Link to="/accounts" className="box" activeProps={{ className: "box on" }}>
-          Accounts
+        <SyncState open={open} />
+        <Link to="/accounts" className="box" activeProps={{ className: "box on" }} title="Accounts">
+          <GearIcon />
+          {open && <span>Accounts</span>}
         </Link>
       </div>
     </nav>
   );
 }
 
-const BoxLink = memo(function BoxLink({ account }: { account: Account }) {
+const AccountBoxes = memo(function AccountBoxes({
+  account,
+  open,
+}: {
+  account: Account;
+  open: boolean;
+}) {
+  const folders = useData(mailBoard.folders.where({ account: account.id }));
+  const shown = folders.length
+    ? folders
+    : [{ account: account.id, id: "INBOX", name: "Inbox", kind: "inbox" as const }];
+
+  if (!open) {
+    return (
+      <Link
+        to="/box/$box"
+        params={{ box: account.id }}
+        className="box avatar"
+        activeProps={{ className: "box avatar on" }}
+        title={account.error ? `${account.email} · ${account.error}` : account.email}
+      >
+        <span className={account.error ? "initial warn" : "initial"}>
+          {account.email.slice(0, 1).toUpperCase()}
+        </span>
+      </Link>
+    );
+  }
+
   return (
-    <Link
-      to="/box/$box"
-      params={{ box: account.id }}
-      className="box"
-      activeProps={{ className: "box on" }}
-    >
-      <span>{account.email}</span>
-      <small className="label">
-        {account.error ? `Error · ${account.error}` : account.provider}
+    <section className="account" aria-label={account.email}>
+      <small className="label" title={account.email}>
+        {account.email}
       </small>
-    </Link>
+      {account.error && (
+        <small className="label warn" title={`Last sync failed: ${account.error}`}>
+          {account.error}
+        </small>
+      )}
+      {shown.map((folder) => (
+        <Link
+          key={folder.id}
+          to="/box/$box"
+          params={{ box: folder.id === "INBOX" ? account.id : `${account.id}~${folder.id}` }}
+          className="box"
+          activeProps={{ className: "box on" }}
+          title={folderNames[folder.kind] || folder.name}
+        >
+          <FolderIcon kind={folder.kind} />
+          <span>{folderNames[folder.kind] || folder.name}</span>
+        </Link>
+      ))}
+    </section>
   );
 });
 
-function BoxHead({ box, unread, count }: { box: string; unread: number; count: number }) {
+function FolderName({ account, id, fallback }: { account: string; id: string; fallback: string }) {
+  const folders = useData(mailBoard.folders.where({ account }));
+  const folder = folders.find((f) => f.id === id);
+  if (!folder || folder.kind === "inbox") return <>{fallback}</>;
+
+  return <>{folderNames[folder.kind] || folder.name}</>;
+}
+
+function BoxTitle({ box, unread, count }: { box: string; unread: number; count: number }) {
   const accounts = useData(mailBoard.accounts.where({}));
+  const [accountId = "", folderId = "INBOX"] = box.split("~");
+  const own = accounts.find((a) => a.id === accountId);
+
+  if (box.startsWith("search:")) {
+    return (
+      <>
+        <small className="label">Search · {count} found</small>
+        <h1>{box.slice(7)}</h1>
+      </>
+    );
+  }
+  return (
+    <>
+      <small className="label">
+        {own ? own.email : "All inboxes"} · {unread} unread
+      </small>
+      <h1>
+        <FolderName account={accountId} id={folderId} fallback={own ? own.name : "Inbox"} />
+      </h1>
+    </>
+  );
+}
+
+function BoxHead({ box, unread, count }: { box: string; unread: number; count: number }) {
   const navigate = useNavigate();
-  const own = accounts.find((a) => a.id === box);
   const query = box.startsWith("search:") ? box.slice(7) : "";
-  const where = own ? own.email : "All inboxes";
 
   return (
     <header className="list-head">
@@ -101,11 +241,9 @@ function BoxHead({ box, unread, count }: { box: string; unread: number; count: n
           defaultValue={query}
           autoComplete="off"
         />
+        <SearchIcon />
       </form>
-      <small className="label">
-        {query ? `Search · ${count} found` : `${where} · ${unread} unread`}
-      </small>
-      <h1>{query || (own ? own.name : "Inbox")}</h1>
+      <BoxTitle box={box} unread={unread} count={count} />
     </header>
   );
 }
@@ -151,8 +289,8 @@ export function Box({ box }: { box: string }) {
         <BoxHead box={box} unread={list.filter((m) => m.unread).length} count={list.length} />
         <BoxState state={state} empty={list.length === 0} searching={box.startsWith("search:")} />
         <ol className="rows">
-          {list.map((m) => (
-            <MessageRow key={m.id} row={m} />
+          {list.map((m, i) => (
+            <MessageRow key={m.id} row={m} nth={i < 9 ? i + 1 : 0} />
           ))}
         </ol>
       </section>
@@ -161,21 +299,23 @@ export function Box({ box }: { box: string }) {
   );
 }
 
-const MessageRow = memo(function MessageRow({ row }: { row: Row }) {
+const MessageRow = memo(function MessageRow({ row, nth }: { row: Row; nth: number }) {
   return (
     <li>
       <Link
         to="/box/$box/$id"
         params={{ box: row.box, id: row.id }}
         className={row.unread ? "row unread" : "row"}
+        title={nth ? `Ctrl+${nth}` : undefined}
         activeProps={{ className: row.unread ? "row unread on" : "row on" }}
       >
         <span className="from">{row.fromName || row.fromAddr}</span>
         <small className="date">
           <When at={row.date} />
+          {nth > 0 && <kbd className="nth">{nth}</kbd>}
         </small>
         <span className="subject">
-          {row.attach && <span className="clip">⌁ </span>}
+          {row.attach && <ClipIcon />}
           {row.subject || "(no subject)"}
         </span>
         <span className="snippet">{row.snippet}</span>

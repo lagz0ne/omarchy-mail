@@ -1,6 +1,8 @@
 import { useData, useRun } from "@tinkered/react";
 import { memo } from "react";
 
+import { PlusIcon, TrashIcon } from "@/ui/icons";
+
 import { type Account, mailApi, mailBoard } from "./contract";
 import { When } from "./inbox";
 
@@ -18,10 +20,12 @@ export function Accounts() {
       </ul>
       <div className="actions">
         <a rel="external" className="key" href="/oauth/start/google">
-          Add Gmail
+          <PlusIcon />
+          Gmail
         </a>
         <a rel="external" className="key" href="/oauth/start/microsoft">
-          Add Outlook
+          <PlusIcon />
+          Outlook
         </a>
       </div>
     </section>
@@ -48,11 +52,13 @@ const AccountRow = memo(function AccountRow({ account }: { account: Account }) {
       </small>
       <button
         type="button"
-        className="key"
+        className="icon-key"
+        title={`Remove ${account.email}`}
+        aria-label={`Remove ${account.email}`}
         disabled={remove.isPending}
         onClick={() => remove.run({ input: { id: account.id } })}
       >
-        Remove
+        <TrashIcon />
       </button>
     </li>
   );
