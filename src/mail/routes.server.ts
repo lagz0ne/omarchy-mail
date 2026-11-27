@@ -11,6 +11,7 @@ import { sourceOf, splitId } from "./ops.server";
 import { attachmentOf, proxyLink } from "./render.server";
 import { listAccounts, saveAccount } from "./store.server";
 import { prefetchAll, syncAll } from "./sync.server";
+import { throttle } from "./throttle.server";
 
 const notice = operation({
   label: "route.notice",
@@ -150,14 +151,14 @@ export const cidRoute = operation({
 export const imageRoute = operation({
   label: "route.image",
   input: z.object({ u: z.string().url(), s: z.string() }),
-  depends: { proxyLink, net },
-  run: async ({ proxyLink, net }, { input }) => {
+  depends: { proxyLink, net, throttle },
+  run: async ({ proxyLink, net, throttle }, { input }) => {
     const signed = new URL(proxyLink.run({ input: input.u })).searchParams.get("s");
     if (signed !== input.s || !/^https?:/i.test(input.u)) {
       return new Response(null, { status: 403 });
     }
-    const res = await net.fetch(
-      new Request(input.u, { headers: { accept: "image/*" }, redirect: "follow" }),
+    const res = await throttle.run(input.u, () =>
+      net.fetch(new Request(input.u, { headers: { accept: "image/*" }, redirect: "follow" })),
     );
 
     const type = res.headers.get("content-type") ?? "";

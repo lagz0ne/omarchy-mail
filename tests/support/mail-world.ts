@@ -12,6 +12,7 @@ import { backoff, net, type Http } from "@/mail/net.server";
 import { mailLoads, mailOps } from "@/mail/ops.server";
 import { mailRoutes } from "@/mail/routes.server";
 import { store } from "@/mail/store.server";
+import { throttle } from "@/mail/throttle.server";
 
 export const origin = "http://127.0.0.1:6245";
 
@@ -270,6 +271,7 @@ export async function boot(
     capsules: [
       exits({ file: process.env.TINKER_EXITS }),
       store({ file: ":memory:" }),
+      throttle(),
       net({ fetch: http }),
       keyring({ store: secrets }),
       outlookImap({ open }),

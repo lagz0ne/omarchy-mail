@@ -1,6 +1,8 @@
 import { capsule, operation, tag } from "@tinkered/core";
 import { z } from "zod";
 
+import { throttle } from "./throttle.server";
+
 export type Http = (input: Request) => Promise<Response>;
 
 const fetcher = tag<Http>({ label: "net.fetch", default: (request) => fetch(request) });
@@ -56,13 +58,13 @@ const once = operation({
 export const send = operation({
   label: "net.send",
   input: ask,
-  depends: { once, retries, backoff, busy },
-  run: async ({ once, retries, backoff, busy }, { input, clock, signal }) => {
-    let res = await once.run({ input });
+  depends: { once, throttle, retries, backoff, busy },
+  run: async ({ once, throttle, retries, backoff, busy }, { input }) => {
+    let res = await throttle.run(input.url, () => once.run({ input }));
     for (let n = 0; n < retries && busy.includes(res.status); n++) {
       const after = Number(res.headers.get("retry-after"));
-      await clock.sleep(after > 0 ? after * 1000 : backoff * 2 ** n, signal);
-      res = await once.run({ input });
+      throttle.pause(input.url, after > 0 ? after * 1000 : backoff * 2 ** n);
+      res = await throttle.run(input.url, () => once.run({ input }));
     }
     return res;
   },

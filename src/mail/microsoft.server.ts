@@ -6,6 +6,7 @@ import { outlookImap } from "./imap.server";
 import { sendJson } from "./net.server";
 import { refreshed, signedIn } from "./provider.server";
 import type { Meta } from "./store.server";
+import { throttle } from "./throttle.server";
 
 const login = tag<string>({
   label: "microsoft.login",
@@ -170,9 +171,11 @@ export const microsoftRefresh = operation({
 export const microsoftPull = operation({
   label: "microsoft.pull",
   input: z.object({ access: z.string(), user: z.string() }),
-  depends: { imap: outlookImap, newest },
-  run: async ({ imap, newest }, { input }) => {
-    const box = await imap.list({ user: input.user, access: input.access, limit: newest });
+  depends: { imap: outlookImap, throttle, newest },
+  run: async ({ imap, throttle, newest }, { input }) => {
+    const box = await throttle.run("microsoft", () =>
+      imap.list({ user: input.user, access: input.access, limit: newest }),
+    );
     const rows: Meta[] = z
       .array(fetched)
       .parse(box.rows)
@@ -195,9 +198,11 @@ export const microsoftPull = operation({
 export const microsoftRaw = operation({
   label: "microsoft.raw",
   input: z.object({ access: z.string(), user: z.string(), pid: z.string() }),
-  depends: { imap: outlookImap },
-  run: async ({ imap }, { input, raise }) => {
-    const mime = await imap.source({ user: input.user, access: input.access, uid: input.pid });
+  depends: { imap: outlookImap, throttle },
+  run: async ({ imap, throttle }, { input, raise }) => {
+    const mime = await throttle.run("microsoft", () =>
+      imap.source({ user: input.user, access: input.access, uid: input.pid }),
+    );
     if (!mime) return raise("ProviderFailed", { status: 404, url: `imap:${input.pid}`, body: "" });
 
     return mime;
@@ -207,9 +212,11 @@ export const microsoftRaw = operation({
 export const microsoftRaws = operation({
   label: "microsoft.raws",
   input: z.object({ access: z.string(), user: z.string(), pids: z.array(z.string()) }),
-  depends: { imap: outlookImap },
-  run: async ({ imap }, { input }) => {
-    const found = await imap.sources({ user: input.user, access: input.access, uids: input.pids });
+  depends: { imap: outlookImap, throttle },
+  run: async ({ imap, throttle }, { input }) => {
+    const found = await throttle.run("microsoft", () =>
+      imap.sources({ user: input.user, access: input.access, uids: input.pids }),
+    );
     return found.map((m) => ({ pid: m.uid, mime: m.mime }));
   },
 });
@@ -217,13 +224,10 @@ export const microsoftRaws = operation({
 export const microsoftMark = operation({
   label: "microsoft.mark",
   input: z.object({ access: z.string(), user: z.string(), pid: z.string(), unread: z.boolean() }),
-  depends: { imap: outlookImap },
-  run: async ({ imap }, { input }) => {
-    await imap.flag({
-      user: input.user,
-      access: input.access,
-      uid: input.pid,
-      seen: !input.unread,
-    });
+  depends: { imap: outlookImap, throttle },
+  run: async ({ imap, throttle }, { input }) => {
+    await throttle.run("microsoft", () =>
+      imap.flag({ user: input.user, access: input.access, uid: input.pid, seen: !input.unread }),
+    );
   },
 });

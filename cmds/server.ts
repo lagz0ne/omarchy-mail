@@ -19,6 +19,7 @@ import { net } from "@/mail/net.server";
 import { mailLoads, mailOps } from "@/mail/ops.server";
 import { mailRoutes } from "@/mail/routes.server";
 import { store } from "@/mail/store.server";
+import { throttle } from "@/mail/throttle.server";
 import { theme } from "@/theme";
 import { themeServer } from "@/theme/theme.server";
 
@@ -121,6 +122,7 @@ export default defineMain(async ({ env, args, signal, stdout, stderr, exit }) =>
       }),
       sink,
       store({ file: join(own.dataDir, "mail.db") }),
+      throttle(),
       net(),
       keyring(),
       outlookImap(),
